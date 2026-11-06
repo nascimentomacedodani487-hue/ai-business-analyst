@@ -1,0 +1,66 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Ambientes virtuais
+.venv/
+.venv-*/
+venv/
+env/
+
+# Variáveis de ambiente
+.env
+.env.*
+!.env.example
+
+# Bancos e dados locais
+data/*.duckdb
+data/*.duckdb.wal
+data/*.sqlite
+data/*.sqlite3
+data/*.db
+
+# Backups locais
+*.backup
+*.backup_*
+
+# Logs
+*.log
+
+# IDEs
+.idea/
+.vscode/
+
+# Next.js
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/.vercel/
+frontend/*.tsbuildinfo
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# SQLite e arquivos auxiliares
+data/*.sqlite*
+data/*.db-*
+data/*-wal
+data/*-shm
+
+# Arquivos temporários e backups
+*.tmp
+*.bak
+*.orig
+*.swp
+
+# Relatórios locais
+reports/
