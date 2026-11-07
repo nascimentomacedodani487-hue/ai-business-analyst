@@ -252,8 +252,8 @@ Last verified on 2026-11-06 from a clean clone: **195 backend tests passed** and
 
 | Workflow | Trigger | Purpose |
 |---|---|---|
-| [`ci.yml`](.github/workflows/ci.yml) | push to `main`, pull requests | Runs `pytest` and the frontend `tsc` check; read-only permissions, no secrets |
-| [`snake.yml`](.github/workflows/snake.yml) | daily + manual | Generates the contribution snake and publishes it to the `output` branch |
+| [`ci.yml`](.github/workflows/ci.yml) | Push to `main`, pull requests | Runs `pytest` and the frontend `tsc` check; read-only permissions, no secrets |
+| [`snake.yml`](.github/workflows/snake.yml) | Daily + manual | Generates the contribution snake and publishes it to the `output` branch |
 
 <div align="center">
 
@@ -521,8 +521,8 @@ npx tsc --noEmit
 
 | Workflow | Gatilho | Finalidade |
 |---|---|---|
-| [`ci.yml`](.github/workflows/ci.yml) | push na `main`, pull requests | Roda `pytest` e a checagem `tsc` do frontend; permissões somente leitura, sem segredos |
-| [`snake.yml`](.github/workflows/snake.yml) | diário + manual | Gera a cobrinha de contribuições e publica na branch `output` |
+| [`ci.yml`](.github/workflows/ci.yml) | Push na `main`, pull requests | Executa `pytest` e a checagem `tsc` do frontend; permissões somente leitura, sem segredos |
+| [`snake.yml`](.github/workflows/snake.yml) | Diário + manual | Gera a cobrinha de contribuições e publica na branch `output` |
 
 A cobrinha (exibida na seção em inglês) é decorativa e mostra o **gráfico de contribuições da conta do dono no GitHub, não a atividade deste repositório.** Ela só aparece depois que o `snake.yml` rodar uma vez: no repositório, vá em **Settings → Actions → General** e permita as actions, depois abra **Actions → Generate Snake → Run workflow**. A imagem é servida pela branch `output`.
 
