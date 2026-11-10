@@ -16,7 +16,9 @@ def tables():
 
 @pytest.fixture(scope="module")
 def db_path(tmp_path_factory):
-    return build_database(tmp_path_factory.mktemp("db") / "t.duckdb", seed=7, n_orders=N)
+    return build_database(
+        tmp_path_factory.mktemp("db") / "t.duckdb", seed=7, n_orders=N
+    )
 
 
 def test_same_seed_same_data():
@@ -41,7 +43,10 @@ def test_referential_integrity(tables):
 
 def test_city_consistency(tables):
     o, r = tables["orders"], tables["restaurants"].set_index("restaurant_id")
-    c, k = tables["customers"].set_index("customer_id"), tables["couriers"].set_index("courier_id")
+    c, k = (
+        tables["customers"].set_index("customer_id"),
+        tables["couriers"].set_index("courier_id"),
+    )
     assert (o["city"].to_numpy() == r.loc[o["restaurant_id"], "city"].to_numpy()).all()
     assert (o["city"].to_numpy() == c.loc[o["customer_id"], "city"].to_numpy()).all()
     assert (o["city"].to_numpy() == k.loc[o["courier_id"], "city"].to_numpy()).all()
@@ -56,7 +61,10 @@ def test_no_order_before_signup(tables):
 def test_canceled_orders_have_no_delivery_or_rating(tables):
     canceled = tables["orders"].query("status == 'canceled'")
     assert len(canceled) > 0
-    assert canceled["delivery_minutes"].isna().all() and canceled["customer_rating"].isna().all()
+    assert (
+        canceled["delivery_minutes"].isna().all()
+        and canceled["customer_rating"].isna().all()
+    )
 
 
 def test_value_ranges(tables):
@@ -64,7 +72,9 @@ def test_value_ranges(tables):
     assert set(o["status"]) == {"delivered", "canceled"}
     assert o["items_total"].min() >= 10 and o["distance_km"].min() >= 0.4
     assert o["customer_rating"].dropna().between(1, 5).all()
-    assert o["order_ts"].min() >= pd.Timestamp("2025-01-01") and o["order_ts"].max() < pd.Timestamp("2026-01-01")
+    assert o["order_ts"].min() >= pd.Timestamp("2025-01-01") and o[
+        "order_ts"
+    ].max() < pd.Timestamp("2026-01-01")
 
 
 def test_injected_pattern_lunch_peak_beats_dawn(tables):
@@ -88,8 +98,10 @@ def test_db_row_counts(db_path):
 
 def test_schema_docs_match_database(db_path):
     con = connect_readonly(db_path)
-    rows = con.execute("SELECT table_name, column_name FROM information_schema.columns "
-                       "WHERE table_schema = 'main'").fetchall()
+    rows = con.execute(
+        "SELECT table_name, column_name FROM information_schema.columns "
+        "WHERE table_schema = 'main'"
+    ).fetchall()
     con.close()
     actual = {(t, c) for t, c in rows}
     documented = {(t, c) for t, cols in COLUMN_DOCS.items() for c in cols}

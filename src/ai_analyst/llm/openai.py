@@ -1,4 +1,3 @@
-
 """
 Integração com a API oficial da OpenAI.
 """
@@ -26,7 +25,6 @@ from ai_analyst.llm.base import (
 )
 from ai_analyst.llm.metrics import llm_metrics
 
-
 load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -41,10 +39,7 @@ class OpenAIClient:
         api_key = os.getenv("OPENAI_API_KEY")
 
         if not api_key:
-            raise ValueError(
-                "OPENAI_API_KEY não encontrada. "
-                "Verifique o arquivo .env."
-            )
+            raise ValueError("OPENAI_API_KEY não encontrada. Verifique o arquivo .env.")
 
         self.client = OpenAI(api_key=api_key)
         self.model = model
@@ -79,16 +74,10 @@ class OpenAIClient:
 
             content = response.choices[0].message.content
 
-            response_text = (
-                content.strip()
-                if isinstance(content, str)
-                else ""
-            )
+            response_text = content.strip() if isinstance(content, str) else ""
 
             if not response_text:
-                raise LLMResponseError(
-                    "A OpenAI retornou uma resposta vazia."
-                )
+                raise LLMResponseError("A OpenAI retornou uma resposta vazia.")
 
             duration_ms = round(
                 (perf_counter() - start_time) * 1000,
@@ -178,28 +167,24 @@ class OpenAIClient:
                     "O limite de requisições da OpenAI foi atingido."
                 ) from exc
 
-            if (
-                isinstance(exc, (APITimeoutError, TimeoutError))
-                or status_code == 408
-            ):
+            if isinstance(exc, (APITimeoutError, TimeoutError)) or status_code == 408:
                 raise LLMTimeoutError(
-                    "A comunicação com a OpenAI excedeu "
-                    "o tempo limite."
+                    "A comunicação com a OpenAI excedeu o tempo limite."
                 ) from exc
 
-            if (
-                isinstance(exc, APIConnectionError)
-                or status_code in (500, 502, 503, 504)
+            if isinstance(exc, APIConnectionError) or status_code in (
+                500,
+                502,
+                503,
+                504,
             ):
                 raise LLMTransientProviderError(
-                    "O serviço OpenAI está temporariamente "
-                    "indisponível."
+                    "O serviço OpenAI está temporariamente indisponível."
                 ) from exc
 
             if isinstance(exc, APIStatusError):
                 raise LLMProviderError(
-                    f"A API OpenAI retornou um erro HTTP "
-                    f"{status_code}."
+                    f"A API OpenAI retornou um erro HTTP {status_code}."
                 ) from exc
 
             raise LLMProviderError(

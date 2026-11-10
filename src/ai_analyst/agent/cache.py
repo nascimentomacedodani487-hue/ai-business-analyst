@@ -28,18 +28,13 @@ class AnalysisCache:
     ) -> tuple:
         """Cria uma chave isolada por pergunta, dados e modelo."""
 
-        normalized_question = " ".join(
-            question.strip().lower().split()
-        )
+        normalized_question = " ".join(question.strip().lower().split())
 
         normalized_provider = provider.strip().lower()
         normalized_model = model.strip().lower()
 
         # Compatibilidade com registros antigos do cache Gemini.
-        if (
-            normalized_provider == "gemini"
-            and normalized_model == "default"
-        ):
+        if normalized_provider == "gemini" and normalized_model == "default":
             normalized_model = "gemini-2.5-flash"
 
         return (

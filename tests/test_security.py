@@ -1,13 +1,12 @@
-
 import pytest
 
 from ai_analyst.security.guardrails import (
-    validate_query,
     SQLGuardrailError,
+    validate_query,
 )
 
-
 # 1. CONSULTAS LEGÍTIMAS
+
 
 @pytest.mark.parametrize(
     "query",
@@ -16,7 +15,6 @@ from ai_analyst.security.guardrails import (
         "SELECT city, COUNT(*) FROM orders GROUP BY city",
         "SELECT * FROM orders WHERE id = 1",
         "SELECT AVG(delivery_time) FROM orders",
-
         # Tabelas autorizadas
         "SELECT * FROM restaurants",
         "SELECT * FROM customers",
@@ -31,6 +29,7 @@ def test_valid_select_queries(query):
 
 
 # 2. COMANDOS NÃO AUTORIZADOS
+
 
 @pytest.mark.parametrize(
     "query",
@@ -51,6 +50,7 @@ def test_unauthorized_commands(query):
 
 # 3. MÚLTIPLAS INSTRUÇÕES
 
+
 @pytest.mark.parametrize(
     "query",
     [
@@ -65,6 +65,7 @@ def test_multiple_statements(query):
 
 
 # 4. TENTATIVAS DE ACESSO A ARQUIVOS
+
 
 @pytest.mark.parametrize(
     "query",
@@ -84,6 +85,7 @@ def test_filesystem_attacks(query):
 
 # 5. ACESSO A BANCOS EXTERNOS
 
+
 @pytest.mark.parametrize(
     "query",
     [
@@ -97,6 +99,7 @@ def test_external_database_attacks(query):
 
 
 # 6. ENTRADAS INVÁLIDAS
+
 
 @pytest.mark.parametrize(
     "query",
@@ -115,6 +118,7 @@ def test_invalid_queries(query):
 
 # 7. TENTATIVA DE JAILBREAK
 
+
 def test_jailbreak_attempt():
     query = """
     SELECT * FROM orders
@@ -127,6 +131,7 @@ def test_jailbreak_attempt():
 
 
 # 8. TABELAS NÃO AUTORIZADAS
+
 
 @pytest.mark.parametrize(
     "sql",
@@ -143,6 +148,7 @@ def test_unauthorized_tables(sql):
 
 
 # 9. CTEs LEGÍTIMAS
+
 
 def test_valid_cte_query():
     query = """
@@ -165,6 +171,7 @@ def test_valid_cte_query():
 
 
 # 10. CTEs ENCADEADAS
+
 
 def test_chained_ctes():
     query = """
@@ -195,6 +202,7 @@ def test_chained_ctes():
 
 # 11. CTE NÃO PODE ESCONDER TABELA NÃO AUTORIZADA
 
+
 def test_cte_rejects_unauthorized_physical_table():
     query = """
     WITH revenue AS (
@@ -213,6 +221,7 @@ def test_cte_rejects_unauthorized_physical_table():
 
 
 # 12. CTE NÃO PODE UTILIZAR FUNÇÕES BLOQUEADAS
+
 
 def test_cte_rejects_blocked_functions():
     query = """

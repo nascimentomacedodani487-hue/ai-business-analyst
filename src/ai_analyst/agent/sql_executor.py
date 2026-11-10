@@ -1,10 +1,9 @@
-
 """
 Execução segura de consultas SQL no DuckDB.
 """
 
-from time import perf_counter
 from collections.abc import Callable
+from time import perf_counter
 
 from ai_analyst.data.db import connect_readonly
 from ai_analyst.security.guardrails import validate_query
@@ -83,17 +82,11 @@ class SQLExecutor:
 
             result = con.execute(validated_sql)
 
-            columns = [
-                description[0]
-                for description in result.description
-            ]
+            columns = [description[0] for description in result.description]
 
             rows = result.fetchall()
 
-            results = [
-                dict(zip(columns, row))
-                for row in rows
-            ]
+            results = [dict(zip(columns, row)) for row in rows]
 
             duration_ms = round(
                 (perf_counter() - stage_start) * 1000,

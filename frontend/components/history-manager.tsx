@@ -39,14 +39,30 @@ function formatDuration(value: number): string {
   return `${(value / 1000).toFixed(1)} s`;
 }
 
-function getStatusLabel(status?: AnalysisStatus): string {
-  return status === "success" ? "Concluída" : "Falhou";
+function getStatusLabel(
+  status?: AnalysisStatus,
+  partialSuccess = false
+): string {
+  if (status !== "success") {
+    return "Falhou";
+  }
+
+  return partialSuccess
+    ? "Concluída parcialmente"
+    : "Concluída";
 }
 
-function getStatusStyle(status?: AnalysisStatus): string {
-  return status === "success"
-    ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-400"
-    : "border-red-500/20 bg-red-500/10 text-red-400";
+function getStatusStyle(
+  status?: AnalysisStatus,
+  partialSuccess = false
+): string {
+  if (status !== "success") {
+    return "border-red-500/20 bg-red-500/10 text-red-400";
+  }
+
+  return partialSuccess
+    ? "border-amber-500/20 bg-amber-500/10 text-amber-300"
+    : "border-emerald-500/20 bg-emerald-500/10 text-emerald-400";
 }
 
 export default function HistoryManager({
@@ -611,9 +627,9 @@ export default function HistoryManager({
                     <div className="min-w-0 flex-1">
                       <div className="mb-2 flex flex-wrap items-center gap-2">
                         <span
-                          className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${getStatusStyle(item.status)}`}
+                          className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${getStatusStyle(item.status, item.partial_success)}`}
                         >
-                          {getStatusLabel(item.status)}
+                          {getStatusLabel(item.status, item.partial_success)}
                         </span>
 
                         {pinned && (

@@ -1,9 +1,9 @@
-﻿
 """
 Armazenamento persistente do histórico de análises.
 
 Utiliza SQLite separado do DuckDB para registrar:
 - Dados completos das análises.
+- Múltiplas consultas SQL por análise.
 - Títulos personalizados e configurações de organização.
 - Fixação, bloqueio e arquivamento.
 - Projetos e associação de análises.
@@ -16,18 +16,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import uuid
 import unicodedata
-
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
 DEFAULT_HISTORY_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "data"
-    / "analysis_history.sqlite3"
+    Path(__file__).resolve().parents[3] / "data" / "analysis_history.sqlite3"
 )
 
 
@@ -50,10 +46,9 @@ class AnalysisHistory:
     def _now() -> str:
         return datetime.now(timezone.utc).isoformat()
 
-
     @staticmethod
     def _normalize_text(value: str | None) -> str:
-        """Normaliza texto para pesquisa sem distin??o de acentos."""
+        """Normaliza texto para pesquisa sem distinção de acentos."""
         if value is None:
             return ""
 
@@ -116,6 +111,7 @@ class AnalysisHistory:
                     error_type TEXT,
                     error_message TEXT,
                     sql TEXT,
+                    queries_json TEXT NOT NULL DEFAULT '[]',
                     results_json TEXT NOT NULL DEFAULT '[]',
                     total_results INTEGER NOT NULL DEFAULT 0,
                     answer TEXT,
@@ -141,6 +137,7 @@ class AnalysisHistory:
 
             migrations = {
                 "sql": "TEXT",
+                "queries_json": "TEXT NOT NULL DEFAULT '[]'",
                 "results_json": "TEXT NOT NULL DEFAULT '[]'",
                 "total_results": "INTEGER NOT NULL DEFAULT 0",
                 "answer": "TEXT",
@@ -152,8 +149,7 @@ class AnalysisHistory:
                 "is_locked": "INTEGER NOT NULL DEFAULT 0",
                 "is_archived": "INTEGER NOT NULL DEFAULT 0",
                 "project_id": (
-                    "TEXT REFERENCES analysis_projects(project_id) "
-                    "ON DELETE SET NULL"
+                    "TEXT REFERENCES analysis_projects(project_id) ON DELETE SET NULL"
                 ),
             }
 
@@ -240,13 +236,12 @@ class AnalysisHistory:
             "status": record["status"],
             "total_time_ms": record["total_time_ms"],
             "cache_hit": bool(record["cache_hit"]),
-            "llm_metrics": json.loads(
-                record["llm_metrics_json"]
-            ),
+            "llm_metrics": json.loads(record["llm_metrics_json"]),
             "steps": json.loads(record["steps_json"]),
             "error_type": record["error_type"],
             "error_message": record["error_message"],
             "sql": record["sql"],
+            "queries": json.loads(record["queries_json"]),
             "results": json.loads(record["results_json"]),
             "total_results": record["total_results"],
             "answer": record["answer"],
@@ -297,8 +292,7 @@ class AnalysisHistory:
 
         if record["is_locked"]:
             raise ValueError(
-                "Esta análise está bloqueada. "
-                "Desbloqueie-a antes de modificá-la."
+                "Esta análise está bloqueada. Desbloqueie-a antes de modificá-la."
             )
 
         return True
@@ -315,6 +309,7 @@ class AnalysisHistory:
         error_type: str | None = None,
         error_message: str | None = None,
         sql: str | None = None,
+        queries: list[dict[str, Any]] | None = None,
         results: list[dict[str, Any]] | None = None,
         total_results: int | None = None,
         answer: str | None = None,
@@ -327,14 +322,13 @@ class AnalysisHistory:
             raise ValueError("analysis_id não pode ser vazio.")
 
         if status not in {"success", "failure"}:
-            raise ValueError(
-                "status deve ser 'success' ou 'failure'."
-            )
+            raise ValueError("status deve ser 'success' ou 'failure'.")
 
         if total_time_ms < 0:
-            raise ValueError(
-                "total_time_ms não pode ser negativo."
-            )
+            raise ValueError("total_time_ms não pode ser negativo.")
+
+        if queries is not None and not isinstance(queries, list):
+            raise ValueError("queries deve ser uma lista.")
 
         if results is not None and not isinstance(results, list):
             raise ValueError("results deve ser uma lista.")
@@ -343,21 +337,16 @@ class AnalysisHistory:
             total_results = len(results or [])
 
         if total_results < 0:
-            raise ValueError(
-                "total_results não pode ser negativo."
-            )
+            raise ValueError("total_results não pode ser negativo.")
 
         created_at = self._now()
 
         llm_metrics_json = self._serialize(llm_metrics or {})
         steps_json = self._serialize(steps or [])
+        queries_json = self._serialize(queries or [])
         results_json = self._serialize(results or [])
 
-        chart_json = (
-            self._serialize(chart)
-            if chart is not None
-            else None
-        )
+        chart_json = self._serialize(chart) if chart is not None else None
 
         if error_message is not None:
             error_message = error_message[:500]
@@ -377,6 +366,7 @@ class AnalysisHistory:
                     error_type,
                     error_message,
                     sql,
+                    queries_json,
                     results_json,
                     total_results,
                     answer,
@@ -386,7 +376,8 @@ class AnalysisHistory:
                     title
                 )
                 VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
 
                 ON CONFLICT(analysis_id)
@@ -401,6 +392,7 @@ class AnalysisHistory:
                     error_type = excluded.error_type,
                     error_message = excluded.error_message,
                     sql = excluded.sql,
+                    queries_json = excluded.queries_json,
                     results_json = excluded.results_json,
                     total_results = excluded.total_results,
                     answer = excluded.answer,
@@ -420,6 +412,7 @@ class AnalysisHistory:
                     error_type,
                     error_message,
                     sql,
+                    queries_json,
                     results_json,
                     total_results,
                     answer,
@@ -461,22 +454,16 @@ class AnalysisHistory:
     ) -> dict[str, Any]:
         """Lista análises com pesquisa, filtros e paginação."""
         if not 1 <= limit <= 100:
-            raise ValueError(
-                "limit deve estar entre 1 e 100."
-            )
+            raise ValueError("limit deve estar entre 1 e 100.")
 
         if offset < 0:
-            raise ValueError(
-                "offset não pode ser negativo."
-            )
+            raise ValueError("offset não pode ser negativo.")
 
         if status is not None and status not in {
             "success",
             "failure",
         }:
-            raise ValueError(
-                "status deve ser 'success', 'failure' ou None."
-            )
+            raise ValueError("status deve ser 'success', 'failure' ou None.")
 
         conditions: list[str] = []
         parameters: list[Any] = []
@@ -490,12 +477,9 @@ class AnalysisHistory:
 
         if search is not None and search.strip():
             conditions.append(
-                "(normalize_text(title) LIKE ? "
-                "OR normalize_text(question) LIKE ?)"
+                "(normalize_text(title) LIKE ? OR normalize_text(question) LIKE ?)"
             )
-            search_term = (
-                f"%{self._normalize_text(search.strip())}%"
-            )
+            search_term = f"%{self._normalize_text(search.strip())}%"
             parameters.extend([search_term, search_term])
 
         if project_id == "__unassigned__":
@@ -504,11 +488,7 @@ class AnalysisHistory:
             conditions.append("project_id = ?")
             parameters.append(project_id)
 
-        where_clause = (
-            f"WHERE {' AND '.join(conditions)}"
-            if conditions
-            else ""
-        )
+        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
         with self._connect() as connection:
             total = connection.execute(
@@ -535,10 +515,7 @@ class AnalysisHistory:
             ).fetchall()
 
         return {
-            "items": [
-                self._deserialize_record(record)
-                for record in records
-            ],
+            "items": [self._deserialize_record(record) for record in records],
             "pagination": {
                 "total": total,
                 "limit": limit,
@@ -559,9 +536,7 @@ class AnalysisHistory:
         title = title.strip()
 
         if len(title) > 150:
-            raise ValueError(
-                "O título deve ter no máximo 150 caracteres."
-            )
+            raise ValueError("O título deve ter no máximo 150 caracteres.")
 
         with self._connect() as connection:
             if not self._ensure_analysis_editable(
@@ -722,17 +697,13 @@ class AnalysisHistory:
         name = name.strip()
 
         if len(name) > 100:
-            raise ValueError(
-                "O nome do projeto deve ter no máximo 100 caracteres."
-            )
+            raise ValueError("O nome do projeto deve ter no máximo 100 caracteres.")
 
         if description is not None:
             description = description.strip() or None
 
             if description and len(description) > 500:
-                raise ValueError(
-                    "A descrição deve ter no máximo 500 caracteres."
-                )
+                raise ValueError("A descrição deve ter no máximo 500 caracteres.")
 
         project_id = str(uuid.uuid4())
         now = self._now()
@@ -801,10 +772,7 @@ class AnalysisHistory:
                 """
             ).fetchall()
 
-        return [
-            self._deserialize_project(record)
-            for record in records
-        ]
+        return [self._deserialize_project(record) for record in records]
 
     def rename_project(
         self,
@@ -818,9 +786,7 @@ class AnalysisHistory:
         name = name.strip()
 
         if len(name) > 100:
-            raise ValueError(
-                "O nome do projeto deve ter no máximo 100 caracteres."
-            )
+            raise ValueError("O nome do projeto deve ter no máximo 100 caracteres.")
 
         with self._connect() as connection:
             cursor = connection.execute(

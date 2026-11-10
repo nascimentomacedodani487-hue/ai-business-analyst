@@ -1,5 +1,3 @@
-import pytest
-
 from ai_analyst.agent.context import build_system_prompt
 
 

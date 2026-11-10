@@ -1,4 +1,3 @@
-
 import pytest
 
 from ai_analyst.agent.sql_generator import SQLGenerator
@@ -30,24 +29,19 @@ def test_generate_sql():
     """Verifica se a pergunta é transformada em SQL válido."""
 
     fake_gemini = FakeGeminiClient(
-        "SELECT city, COUNT(*) AS total "
-        "FROM orders GROUP BY city"
+        "SELECT city, COUNT(*) AS total FROM orders GROUP BY city"
     )
 
     generator = SQLGenerator(gemini=fake_gemini)
 
-    sql = generator.generate(
-        "Qual cidade teve mais pedidos entregues?"
-    )
+    sql = generator.generate("Qual cidade teve mais pedidos entregues?")
 
     assert isinstance(sql, str)
     assert "SELECT" in sql.upper()
     assert "FROM orders" in sql
     assert "GROUP BY city" in sql
 
-    assert "Qual cidade teve mais pedidos entregues?" in (
-        fake_gemini.last_prompt
-    )
+    assert "Qual cidade teve mais pedidos entregues?" in (fake_gemini.last_prompt)
 
     assert fake_gemini.last_system_prompt
     assert fake_gemini.last_max_output_tokens == 512
@@ -68,9 +62,7 @@ def test_generate_sql_rejects_empty_question():
 def test_generate_sql_rejects_unsafe_query():
     """Verifica se consultas perigosas são bloqueadas."""
 
-    fake_gemini = FakeGeminiClient(
-        "DELETE FROM orders"
-    )
+    fake_gemini = FakeGeminiClient("DELETE FROM orders")
 
     generator = SQLGenerator(gemini=fake_gemini)
 
@@ -82,8 +74,7 @@ def test_correct_sql_successfully():
     """Verifica a correção de uma consulta SQL."""
 
     fake_gemini = FakeGeminiClient(
-        "SELECT city, COUNT(*) AS total "
-        "FROM orders GROUP BY city"
+        "SELECT city, COUNT(*) AS total FROM orders GROUP BY city"
     )
 
     generator = SQLGenerator(provider=fake_gemini)
@@ -134,9 +125,7 @@ def test_correct_sql_rejects_empty_parameters(
 def test_correct_sql_rejects_unsafe_query():
     """Verifica se uma correção perigosa é bloqueada."""
 
-    fake_gemini = FakeGeminiClient(
-        "SELECT * FROM read_csv('arquivo.csv')"
-    )
+    fake_gemini = FakeGeminiClient("SELECT * FROM read_csv('arquivo.csv')")
 
     generator = SQLGenerator(provider=fake_gemini)
 

@@ -1,4 +1,3 @@
-
 import pytest
 
 from ai_analyst.llm.base import (
@@ -35,10 +34,12 @@ class FakeProvider:
 
 
 def test_retry_recovers_after_timeout():
-    provider = FakeProvider([
-        LLMTimeoutError("Timeout"),
-        "Resposta recuperada.",
-    ])
+    provider = FakeProvider(
+        [
+            LLMTimeoutError("Timeout"),
+            "Resposta recuperada.",
+        ]
+    )
 
     delays = []
 
@@ -60,11 +61,13 @@ def test_retry_recovers_after_timeout():
 
 
 def test_retry_recovers_after_transient_provider_error():
-    provider = FakeProvider([
-        LLMTransientProviderError("Servidor indisponível"),
-        LLMTransientProviderError("Servidor indisponível"),
-        "Resposta recuperada.",
-    ])
+    provider = FakeProvider(
+        [
+            LLMTransientProviderError("Servidor indisponível"),
+            LLMTransientProviderError("Servidor indisponível"),
+            "Resposta recuperada.",
+        ]
+    )
 
     delays = []
 
@@ -86,11 +89,13 @@ def test_retry_recovers_after_transient_provider_error():
 
 
 def test_retry_uses_exponential_backoff():
-    provider = FakeProvider([
-        LLMTimeoutError("Timeout 1"),
-        LLMTimeoutError("Timeout 2"),
-        "Sucesso",
-    ])
+    provider = FakeProvider(
+        [
+            LLMTimeoutError("Timeout 1"),
+            LLMTimeoutError("Timeout 2"),
+            "Sucesso",
+        ]
+    )
 
     delays = []
 
@@ -113,11 +118,13 @@ def test_retry_uses_exponential_backoff():
 def test_retry_stops_after_max_attempts():
     error = LLMTimeoutError("Timeout persistente")
 
-    provider = FakeProvider([
-        error,
-        error,
-        error,
-    ])
+    provider = FakeProvider(
+        [
+            error,
+            error,
+            error,
+        ]
+    )
 
     delays = []
 
@@ -225,9 +232,11 @@ def test_retry_rejects_negative_initial_delay():
 
 
 def test_retry_can_be_disabled_with_one_attempt():
-    provider = FakeProvider([
-        LLMTimeoutError("Timeout"),
-    ])
+    provider = FakeProvider(
+        [
+            LLMTimeoutError("Timeout"),
+        ]
+    )
 
     delays = []
 
@@ -246,3 +255,114 @@ def test_retry_can_be_disabled_with_one_attempt():
 
     assert provider.calls == 1
     assert delays == []
+
+
+def test_retry_passes_structured_json_response():
+    """Verifica o encaminhamento da geração JSON estruturada."""
+
+    class StructuredProvider:
+        def __init__(self):
+            self.calls = 0
+            self.received_schema = None
+            self.received_tokens = None
+
+        def generate_json_response(
+            self,
+            user_prompt,
+            system_prompt,
+            response_schema,
+            max_output_tokens=2048,
+        ):
+            self.calls += 1
+            self.received_schema = response_schema
+            self.received_tokens = max_output_tokens
+
+            return '{"objectives": []}'
+
+    provider = StructuredProvider()
+
+    retry = RetryLLMProvider(
+        provider=provider,
+        sleep_fn=lambda _: None,
+    )
+
+    schema = {"type": "object", "properties": {"objectives": {"type": "array"}}}
+
+    response = retry.generate_json_response(
+        user_prompt="Planeje a análise.",
+        system_prompt="Você é um planejador.",
+        response_schema=schema,
+        max_output_tokens=2048,
+    )
+
+    assert response == '{"objectives": []}'
+    assert provider.calls == 1
+    assert provider.received_schema == schema
+    assert provider.received_tokens == 2048
+
+
+def test_retry_recovers_structured_json_after_timeout():
+    """Verifica retry em uma chamada JSON estruturada."""
+
+    class StructuredProvider:
+        def __init__(self):
+            self.outcomes = [
+                LLMTimeoutError("Timeout"),
+                '{"objectives": []}',
+            ]
+            self.calls = 0
+
+        def generate_json_response(
+            self,
+            user_prompt,
+            system_prompt,
+            response_schema,
+            max_output_tokens=2048,
+        ):
+            self.calls += 1
+            outcome = self.outcomes.pop(0)
+
+            if isinstance(outcome, Exception):
+                raise outcome
+
+            return outcome
+
+    provider = StructuredProvider()
+    delays = []
+
+    retry = RetryLLMProvider(
+        provider=provider,
+        max_attempts=3,
+        initial_delay=1,
+        sleep_fn=delays.append,
+    )
+
+    response = retry.generate_json_response(
+        user_prompt="Planeje a análise.",
+        system_prompt="Você é um planejador.",
+        response_schema={"type": "object"},
+    )
+
+    assert response == '{"objectives": []}'
+    assert provider.calls == 2
+    assert delays == [1]
+
+
+def test_retry_falls_back_to_standard_response():
+    """Verifica compatibilidade com provedores sem geração JSON própria."""
+
+    provider = FakeProvider(["Resposta compatível."])
+
+    retry = RetryLLMProvider(
+        provider=provider,
+        sleep_fn=lambda _: None,
+    )
+
+    response = retry.generate_json_response(
+        user_prompt="Pergunta",
+        system_prompt="Instruções",
+        response_schema={"type": "object"},
+    )
+
+    assert response == "Resposta compatível."
+    assert provider.calls == 1

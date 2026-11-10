@@ -1,7 +1,7 @@
 
 type AgentStep = {
   name: string;
-  status: "completed" | "failed";
+  status: "completed" | "failed" | "unsupported";
   duration_ms: number;
   details?: string | null;
 };
@@ -47,6 +47,14 @@ function getStageLabel(name: string): string {
     return stageLabels[name];
   }
 
+  const capabilityMatch = name.match(
+    /^query_(\d+)_capability_validation$/
+  );
+
+  if (capabilityMatch) {
+    return `Validação de capacidade — consulta ${capabilityMatch[1]}`;
+  }
+
   const correctionMatch = name.match(/^sql_correction_(\d+)$/);
 
   if (correctionMatch) {
@@ -65,6 +73,10 @@ function getStageLabel(name: string): string {
 function getStageDescription(name: string): string | undefined {
   if (stageDescriptions[name]) {
     return stageDescriptions[name];
+  }
+
+  if (/^query_\d+_capability_validation$/.test(name)) {
+    return "Verifica se a base possui os dados e a granularidade necessários antes de gerar SQL.";
   }
 
   const correctionMatch = name.match(/^sql_correction_(\d+)$/);
@@ -131,6 +143,7 @@ export default function AgentTimeline({ steps }: AgentTimelineProps) {
       <div>
         {steps.map((step, index) => {
           const completed = step.status === "completed";
+          const unsupported = step.status === "unsupported";
           const isCache = step.name === "cache_hit";
           const title = getStageLabel(step.name);
           const description = getStageDescription(step.name);
@@ -143,14 +156,16 @@ export default function AgentTimeline({ steps }: AgentTimelineProps) {
               <div className="flex w-8 shrink-0 flex-col items-center">
                 <div
                   className={`flex h-8 w-8 items-center justify-center rounded-full border text-sm ${
-                    !completed
-                      ? "border-red-500/30 bg-red-500/10 text-red-400"
-                      : isCache
-                        ? "border-blue-500/30 bg-blue-500/10 text-blue-400"
-                        : "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
+                    unsupported
+                      ? "border-amber-500/30 bg-amber-500/10 text-amber-300"
+                      : !completed
+                        ? "border-red-500/30 bg-red-500/10 text-red-400"
+                        : isCache
+                          ? "border-blue-500/30 bg-blue-500/10 text-blue-400"
+                          : "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
                   }`}
                 >
-                  {completed ? getStageIcon(step.name) : "!"}
+                  {unsupported ? "?" : completed ? getStageIcon(step.name) : "!"}
                 </div>
 
                 {index < steps.length - 1 && (
@@ -167,18 +182,22 @@ export default function AgentTimeline({ steps }: AgentTimelineProps) {
 
                     <span
                       className={`rounded-full px-2 py-0.5 text-[9px] ${
-                        !completed
-                          ? "bg-red-500/10 text-red-400"
-                          : isCache
-                            ? "bg-blue-500/10 text-blue-400"
-                            : "bg-emerald-500/10 text-emerald-400"
+                        unsupported
+                          ? "bg-amber-500/10 text-amber-300"
+                          : !completed
+                            ? "bg-red-500/10 text-red-400"
+                            : isCache
+                              ? "bg-blue-500/10 text-blue-400"
+                              : "bg-emerald-500/10 text-emerald-400"
                       }`}
                     >
-                      {!completed
-                        ? "Falhou"
-                        : isCache
-                          ? "Cache hit"
-                          : "Concluído"}
+                      {unsupported
+                        ? "Não suportada"
+                        : !completed
+                          ? "Falhou"
+                          : isCache
+                            ? "Cache hit"
+                            : "Concluído"}
                     </span>
                   </div>
 

@@ -1,4 +1,3 @@
-
 from types import SimpleNamespace
 
 import pytest
@@ -55,9 +54,7 @@ def test_gemini_connection(monkeypatch):
         def generate_content(self, **kwargs):
             calls.update(kwargs)
 
-            return SimpleNamespace(
-                text="Sou o AI Business Analyst."
-            )
+            return SimpleNamespace(text="Sou o AI Business Analyst.")
 
     class FakeClient:
         def __init__(self, api_key):
@@ -83,12 +80,8 @@ def test_gemini_connection(monkeypatch):
 
     assert calls["api_key"] == "fake-api-key"
     assert calls["model"] == "gemini-2.5-flash"
-    assert calls["contents"] == (
-        "Explique brevemente qual é sua função."
-    )
-    assert calls["config"].system_instruction == (
-        "Você é um analista de negócios."
-    )
+    assert calls["contents"] == ("Explique brevemente qual é sua função.")
+    assert calls["config"].system_instruction == ("Você é um analista de negócios.")
     assert calls["config"].temperature == 0.1
 
 
@@ -223,3 +216,56 @@ def test_gemini_preserves_standardized_errors(monkeypatch):
 
     assert captured.value is error
     assert isinstance(captured.value, LLMError)
+
+
+def test_gemini_generates_structured_json_response(monkeypatch):
+    """Verifica se a chamada utiliza JSON Schema estruturado."""
+
+    calls = {}
+
+    class FakeModels:
+        def generate_content(self, **kwargs):
+            calls.update(kwargs)
+            return SimpleNamespace(text='{"objectives": []}')
+
+    class FakeClient:
+        def __init__(self, api_key):
+            self.models = FakeModels()
+
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-api-key")
+
+    monkeypatch.setattr(
+        "ai_analyst.llm.gemini.genai.Client",
+        FakeClient,
+    )
+
+    gemini = GeminiClient()
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "objectives": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                },
+            },
+        },
+        "required": ["objectives"],
+    }
+
+    response = gemini.generate_json_response(
+        user_prompt="Planeje a análise.",
+        system_prompt="Você é um planejador.",
+        response_schema=schema,
+        max_output_tokens=2048,
+    )
+
+    assert response == '{"objectives": []}'
+    assert calls["model"] == "gemini-2.5-flash"
+
+    config = calls["config"]
+
+    assert config.response_mime_type == "application/json"
+    assert config.response_json_schema == schema
+    assert config.max_output_tokens == 2048

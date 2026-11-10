@@ -1,4 +1,3 @@
-
 import pytest
 
 from ai_analyst.llm.metrics import LLMMetrics

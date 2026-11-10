@@ -1,4 +1,3 @@
-
 import sqlglot
 from sqlglot import exp
 
@@ -75,16 +74,11 @@ def validate_query(sql_string: str) -> str:
 
     # 1. Verificar entrada vazia ou inválida.
     if not isinstance(sql_string, str) or not sql_string.strip():
-        raise SQLGuardrailError(
-            "A query não pode estar vazia."
-        )
+        raise SQLGuardrailError("A query não pode estar vazia.")
 
     # 2. Interpretar o SQL utilizando o dialeto DuckDB.
     try:
-        parsed_queries = sqlglot.parse(
-            sql_string,
-            read="duckdb"
-        )
+        parsed_queries = sqlglot.parse(sql_string, read="duckdb")
 
     except sqlglot.errors.ParseError as exc:
         raise SQLSyntaxError(
@@ -93,24 +87,17 @@ def validate_query(sql_string: str) -> str:
         ) from exc
 
     # 3. Remover elementos vazios.
-    parsed_queries = [
-        query for query in parsed_queries
-        if query is not None
-    ]
+    parsed_queries = [query for query in parsed_queries if query is not None]
 
     # 4. Bloquear múltiplas instruções.
     if len(parsed_queries) != 1:
-        raise SQLGuardrailError(
-            "Múltiplas instruções SQL não são permitidas."
-        )
+        raise SQLGuardrailError("Múltiplas instruções SQL não são permitidas.")
 
     query = parsed_queries[0]
 
     # 5. Permitir somente SELECT como comando raiz.
     if not isinstance(query, exp.Select):
-        raise SQLGuardrailError(
-            "Somente instruções SELECT são permitidas."
-        )
+        raise SQLGuardrailError("Somente instruções SELECT são permitidas.")
 
     # 6. Identificar as CTEs declaradas.
     cte_names = {
@@ -121,7 +108,6 @@ def validate_query(sql_string: str) -> str:
 
     # 7. Percorrer a AST procurando funções e tabelas proibidas.
     for node in query.walk():
-
         # Bloquear funções que acessam arquivos ou recursos externos.
         if isinstance(node, exp.Func):
             function_names = {
@@ -132,20 +118,15 @@ def validate_query(sql_string: str) -> str:
             if isinstance(node, exp.Anonymous):
                 function_names.add(node.name.lower())
 
-            blocked = function_names.intersection(
-                BLOCKED_FUNCTIONS
-            )
+            blocked = function_names.intersection(BLOCKED_FUNCTIONS)
 
             if blocked:
                 function_name = sorted(blocked)[0]
 
-                raise SQLGuardrailError(
-                    f"Função bloqueada: {function_name}"
-                )
+                raise SQLGuardrailError(f"Função bloqueada: {function_name}")
 
         # Validar todas as tabelas utilizadas na consulta.
         if isinstance(node, exp.Table):
-
             # Identificar funções utilizadas como fontes de tabela.
             table_source = node.this
 
@@ -155,28 +136,20 @@ def validate_query(sql_string: str) -> str:
                 }
 
                 if isinstance(table_source, exp.Anonymous):
-                    function_names.add(
-                        table_source.name.lower()
-                    )
+                    function_names.add(table_source.name.lower())
 
-                blocked = function_names.intersection(
-                    BLOCKED_FUNCTIONS
-                )
+                blocked = function_names.intersection(BLOCKED_FUNCTIONS)
 
                 if blocked:
                     function_name = sorted(blocked)[0]
 
-                    raise SQLGuardrailError(
-                        f"Função bloqueada: {function_name}"
-                    )
+                    raise SQLGuardrailError(f"Função bloqueada: {function_name}")
 
             table_name = node.name.lower()
 
             # Bloquear tabelas de schemas ou catálogos externos.
             if node.db or node.catalog:
-                raise SQLGuardrailError(
-                    f"Tabela não autorizada: {node.sql()}"
-                )
+                raise SQLGuardrailError(f"Tabela não autorizada: {node.sql()}")
 
             # Permitir referências às CTEs declaradas.
             if table_name in cte_names:
@@ -184,15 +157,11 @@ def validate_query(sql_string: str) -> str:
 
             # Bloquear referências sem nome de tabela válido.
             if not table_name:
-                raise SQLGuardrailError(
-                    "Fonte de tabela não autorizada."
-                )
+                raise SQLGuardrailError("Fonte de tabela não autorizada.")
 
             # Verificar se a tabela física está autorizada.
             if table_name not in ALLOWED_TABLES:
-                raise SQLGuardrailError(
-                    f"Tabela não autorizada: {table_name}"
-                )
+                raise SQLGuardrailError(f"Tabela não autorizada: {table_name}")
 
     # 8. Retornar SQL normalizado.
     return query.sql(dialect="duckdb")

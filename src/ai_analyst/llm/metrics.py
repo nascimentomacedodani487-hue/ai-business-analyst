@@ -1,4 +1,3 @@
-
 """
 Métricas agregadas e individuais das chamadas aos provedores de LLM.
 
@@ -13,7 +12,6 @@ from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from threading import Lock
 from typing import Iterator
-
 
 DEFAULT_PROVIDER = "gemini"
 DEFAULT_MODEL = "gemini-2.5-flash"
@@ -97,9 +95,7 @@ class AnalysisLLMMetrics:
                 self.total_tokens += total_tokens
             elif prompt_tokens is not None and output_tokens is not None:
                 self.total_tokens += (
-                    prompt_tokens
-                    + output_tokens
-                    + (thinking_tokens or 0)
+                    prompt_tokens + output_tokens + (thinking_tokens or 0)
                 )
 
     def record_failure(
@@ -160,8 +156,8 @@ class LLMMetrics:
     def __init__(self):
         self._lock = Lock()
 
-        self._active_analysis: ContextVar[AnalysisLLMMetrics | None] = (
-            ContextVar("active_llm_analysis", default=None)
+        self._active_analysis: ContextVar[AnalysisLLMMetrics | None] = ContextVar(
+            "active_llm_analysis", default=None
         )
 
         self._provider_metrics: dict[str, dict] = {}
@@ -238,9 +234,7 @@ class LLMMetrics:
                 current["total_tokens"] += total_tokens
             elif prompt_tokens is not None and output_tokens is not None:
                 current["total_tokens"] += (
-                    prompt_tokens
-                    + output_tokens
-                    + (thinking_tokens or 0)
+                    prompt_tokens + output_tokens + (thinking_tokens or 0)
                 )
 
         analysis_metrics = self._active_analysis.get()
@@ -347,10 +341,7 @@ class LLMMetrics:
         with self._lock:
             providers = list(self._provider_metrics)
 
-        return {
-            provider: self.snapshot(provider=provider)
-            for provider in providers
-        }
+        return {provider: self.snapshot(provider=provider) for provider in providers}
 
     def reset(self) -> None:
         """Zera todas as métricas globais."""

@@ -7,9 +7,45 @@ export type AnalysisStatus = "success" | "failure";
 
 export type AgentStep = {
   name: string;
-  status: "completed" | "failed";
+  status: "completed" | "failed" | "unsupported";
   duration_ms: number;
   details?: string | null;
+};
+
+export type AnalysisChartSeries = {
+  data_key: string;
+  label: string;
+};
+
+export type AnalysisChart = {
+  type: "bar" | "line" | "pie";
+  title: string;
+  label_key: string;
+  value_key: string;
+  data?: Record<string, unknown>[];
+
+  // Séries opcionais para gráficos de barras agrupadas.
+  // Mantém compatibilidade com gráficos históricos.
+  series?: AnalysisChartSeries[];
+};
+
+export type AnalysisQuery = {
+  id: string;
+  objective: string;
+  question: string;
+  status: "success" | "failure";
+  failure_type?: string | null;
+  sql: string | null;
+  results: Record<string, unknown>[];
+  total_results: number;
+  chart: AnalysisChart | null;
+  error: string | null;
+  metrics: {
+    sql_generation_ms?: number;
+    sql_correction_ms?: number;
+    sql_execution_ms?: number;
+    total_time_ms?: number;
+  };
 };
 
 export type Analysis = {
@@ -30,12 +66,16 @@ export type Analysis = {
     response_generation_ms?: number;
     cache_hit: boolean;
   };
-  chart: {
-    type: "bar" | "line" | "pie";
-    title: string;
-    label_key: string;
-    value_key: string;
-  } | null;
+  chart: AnalysisChart | null;
+
+  // Consultas independentes de uma análise composta.
+  queries?: AnalysisQuery[];
+  query_count?: number;
+  successful_queries?: number;
+  failed_queries?: number;
+  unsupported_queries?: number;
+  partial_success?: boolean;
+  analysis_mode?: "single_query" | "multi_query";
 };
 
 export type HistoryItem = {
@@ -48,6 +88,7 @@ export type HistoryItem = {
   cache_hit: boolean;
   timestamp: string;
   status?: AnalysisStatus;
+  partial_success?: boolean;
   error_type?: string | null;
   error_message?: string | null;
   is_pinned?: boolean;
@@ -87,6 +128,7 @@ export type BackendHistoryRecord = {
   status: AnalysisStatus;
   provider?: LLMProvider | null;
   model?: string | null;
+  queries?: AnalysisQuery[] | null;
   total_time_ms: number;
   cache_hit: boolean;
   error_type?: string | null;
@@ -126,6 +168,13 @@ type BackendAnalysisDetail = {
   total_results?: number;
   answer?: string | null;
   chart?: Analysis["chart"];
+  queries?: AnalysisQuery[] | null;
+  query_count?: number;
+  successful_queries?: number;
+  failed_queries?: number;
+  unsupported_queries?: number;
+  partial_success?: boolean;
+  analysis_mode?: "single_query" | "multi_query";
   steps?: AgentStep[];
   error_type?: string | null;
   error_message?: string | null;
@@ -237,6 +286,24 @@ async function apiRequest<T>(
 function mapHistoryRecord(
   record: BackendHistoryRecord
 ): HistoryItem {
+  const queries = Array.isArray(record.queries)
+    ? record.queries
+    : [];
+
+  const successfulCount = queries.filter(
+    (query) => query.status === "success"
+  ).length;
+
+  const unsupportedCount = queries.filter(
+    (query) => query.failure_type === "unsupported_capability"
+  ).length;
+
+  const failedCount = queries.filter(
+    (query) =>
+      query.status === "failure" &&
+      query.failure_type !== "unsupported_capability"
+  ).length;
+
   return {
     analysis_id: record.analysis_id,
     question: record.question,
@@ -247,6 +314,9 @@ function mapHistoryRecord(
     cache_hit: record.cache_hit,
     timestamp: formatTimestamp(record.created_at),
     status: record.status,
+    partial_success:
+      successfulCount > 0 &&
+      (unsupportedCount > 0 || failedCount > 0),
     error_type: record.error_type ?? null,
     error_message: record.error_message ?? null,
     is_pinned: Boolean(record.is_pinned),
@@ -335,6 +405,9 @@ export async function fetchAnalysisDetail(
 /**
  * Converte o registro persistido para o formato
  * utilizado pelos componentes atuais do frontend.
+ *
+ * Mantém compatibilidade com análises antigas
+ * que ainda não possuem consultas múltiplas.
  */
 export function restoreAnalysis(
   detail: BackendAnalysisDetail
@@ -345,6 +418,68 @@ export function restoreAnalysis(
         "Esta análise foi registrada como uma execução com falha."
     );
   }
+
+  const queries = Array.isArray(detail.queries)
+    ? detail.queries
+    : [];
+
+  const successfulQueryCount = queries.filter(
+    (query) => query.status === "success"
+  ).length;
+
+  const unsupportedQueryCount = queries.filter(
+    (query) => query.failure_type === "unsupported_capability"
+  ).length;
+
+  const failedQueryCount = queries.filter(
+    (query) =>
+      query.status === "failure" &&
+      query.failure_type !== "unsupported_capability"
+  ).length;
+
+  // Reconstrói as métricas a partir das etapas persistidas.
+  // Isso mantém a observabilidade ao restaurar análises do histórico.
+  const restoredSteps = Array.isArray(detail.steps)
+    ? detail.steps
+    : [];
+
+  const sumStepDurations = (
+    matches: (name: string) => boolean
+  ): number | undefined => {
+    const matchingSteps = restoredSteps.filter(
+      (step) =>
+        matches(step.name) &&
+        Number.isFinite(step.duration_ms)
+    );
+
+    if (matchingSteps.length === 0) {
+      return undefined;
+    }
+
+    return matchingSteps.reduce(
+      (total, step) => total + step.duration_ms,
+      0
+    );
+  };
+
+  const sqlGenerationMs = sumStepDurations(
+    (name) =>
+      name === "sql_generation" ||
+      /^query_\d+_sql_generation$/.test(name)
+  );
+
+  const sqlExecutionMs = sumStepDurations(
+    (name) =>
+      name === "sql_execution" ||
+      /^query_\d+_sql_execution$/.test(name) ||
+      /^sql_execution_attempt_\d+$/.test(name)
+  );
+
+  const responseGenerationMs = sumStepDurations(
+    (name) =>
+      name === "response_generation" ||
+      name === "multi_response_generation"
+  );
 
   return {
     analysis_id: detail.analysis_id,
@@ -361,14 +496,35 @@ export function restoreAnalysis(
         : 0,
     answer: detail.answer ?? "",
     cache_hit: Boolean(detail.cache_hit),
-    steps: Array.isArray(detail.steps)
-      ? detail.steps
-      : [],
+    steps: restoredSteps,
     metrics: {
       total_time_ms: detail.total_time_ms,
+      sql_generation_ms: sqlGenerationMs,
+      sql_execution_ms: sqlExecutionMs,
+      response_generation_ms: responseGenerationMs,
       cache_hit: Boolean(detail.cache_hit)
     },
-    chart: detail.chart ?? null
+    chart: detail.chart ?? null,
+
+    // Dados das consultas independentes.
+    // Os gráficos e suas séries são preservados integralmente.
+    queries,
+    query_count: detail.query_count ?? queries.length,
+    successful_queries:
+      detail.successful_queries ?? successfulQueryCount,
+    failed_queries:
+      detail.failed_queries ?? failedQueryCount,
+    unsupported_queries:
+      detail.unsupported_queries ?? unsupportedQueryCount,
+    partial_success:
+      detail.partial_success ??
+      (
+        successfulQueryCount > 0 &&
+        (failedQueryCount > 0 || unsupportedQueryCount > 0)
+      ),
+    analysis_mode:
+      detail.analysis_mode ??
+      (queries.length > 0 ? "multi_query" : "single_query")
   };
 }
 

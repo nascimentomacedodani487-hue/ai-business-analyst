@@ -1,4 +1,3 @@
-
 """
 Integração com a API oficial da Anthropic (Claude).
 """
@@ -8,13 +7,12 @@ import os
 from time import perf_counter
 
 from anthropic import (
+    Anthropic,
     APIConnectionError,
     APIStatusError,
     APITimeoutError,
-    Anthropic,
     RateLimitError,
 )
-
 from dotenv import load_dotenv
 
 from ai_analyst.llm.base import (
@@ -26,7 +24,6 @@ from ai_analyst.llm.base import (
     LLMTransientProviderError,
 )
 from ai_analyst.llm.metrics import llm_metrics
-
 
 load_dotenv()
 
@@ -46,8 +43,7 @@ class AnthropicClient:
 
         if not api_key:
             raise ValueError(
-                "ANTHROPIC_API_KEY não encontrada. "
-                "Verifique o arquivo .env."
+                "ANTHROPIC_API_KEY não encontrada. Verifique o arquivo .env."
             )
 
         self.client = Anthropic(api_key=api_key)
@@ -86,9 +82,7 @@ class AnthropicClient:
             ).strip()
 
             if not response_text:
-                raise LLMResponseError(
-                    "A Anthropic retornou uma resposta vazia."
-                )
+                raise LLMResponseError("A Anthropic retornou uma resposta vazia.")
 
             duration_ms = round(
                 (perf_counter() - start_time) * 1000,
@@ -111,8 +105,7 @@ class AnthropicClient:
 
             total_tokens = (
                 prompt_tokens + output_tokens
-                if prompt_tokens is not None
-                and output_tokens is not None
+                if prompt_tokens is not None and output_tokens is not None
                 else None
             )
 
@@ -176,32 +169,27 @@ class AnthropicClient:
 
             if isinstance(exc, RateLimitError) or status_code == 429:
                 raise LLMRateLimitError(
-                    "O limite de requisições da Anthropic "
-                    "foi atingido."
+                    "O limite de requisições da Anthropic foi atingido."
                 ) from exc
 
-            if (
-                isinstance(exc, (APITimeoutError, TimeoutError))
-                or status_code == 408
-            ):
+            if isinstance(exc, (APITimeoutError, TimeoutError)) or status_code == 408:
                 raise LLMTimeoutError(
-                    "A comunicação com a Anthropic excedeu "
-                    "o tempo limite."
+                    "A comunicação com a Anthropic excedeu o tempo limite."
                 ) from exc
 
-            if (
-                isinstance(exc, APIConnectionError)
-                or status_code in (500, 502, 503, 504)
+            if isinstance(exc, APIConnectionError) or status_code in (
+                500,
+                502,
+                503,
+                504,
             ):
                 raise LLMTransientProviderError(
-                    "O serviço Anthropic está temporariamente "
-                    "indisponível."
+                    "O serviço Anthropic está temporariamente indisponível."
                 ) from exc
 
             if isinstance(exc, APIStatusError):
                 raise LLMProviderError(
-                    f"A API Anthropic retornou um erro HTTP "
-                    f"{status_code}."
+                    f"A API Anthropic retornou um erro HTTP {status_code}."
                 ) from exc
 
             raise LLMProviderError(

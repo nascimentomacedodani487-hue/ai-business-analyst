@@ -1,4 +1,3 @@
-
 """
 API principal do AI Business Analyst.
 """
@@ -12,22 +11,20 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from ai_analyst.llm.metrics import llm_metrics
 from ai_analyst.agent.business_analyst import (
-    BusinessAnalyst,
     DEFAULT_MODELS,
+    BusinessAnalyst,
 )
 from ai_analyst.agent.cache import AnalysisCache
 from ai_analyst.data.db import connect_readonly
 from ai_analyst.data.history import AnalysisHistory
-from ai_analyst.data.schema import TABLE_DOCS, COLUMN_DOCS
+from ai_analyst.data.schema import COLUMN_DOCS, TABLE_DOCS
 from ai_analyst.llm.base import (
-    LLMError,
     LLMProviderError,
     LLMRateLimitError,
     LLMTimeoutError,
 )
-
+from ai_analyst.llm.metrics import llm_metrics
 
 LOG_EXTRA_FIELDS = (
     "event",
@@ -50,10 +47,7 @@ LOG_EXTRA_FIELDS = (
 
 handler = logging.StreamHandler()
 handler.setFormatter(
-    logging.Formatter(
-        "%(asctime)s | %(levelname)s | "
-        "%(name)s | %(message)s"
-    )
+    logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 )
 
 root_logger = logging.getLogger()
@@ -90,10 +84,7 @@ class DetailedFormatter(logging.Formatter):
 for existing_handler in root_logger.handlers:
     if isinstance(existing_handler, logging.StreamHandler):
         existing_handler.setFormatter(
-            DetailedFormatter(
-                "%(asctime)s | %(levelname)s | "
-                "%(name)s | %(message)s"
-            )
+            DetailedFormatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
         )
 
 
@@ -179,7 +170,7 @@ class AnalysisRequest(BaseModel):
 
     question: str = Field(
         min_length=3,
-        max_length=1000,
+        max_length=50000,
         description="Pergunta de negócio em linguagem natural.",
     )
 
@@ -321,9 +312,7 @@ def get_data_catalog():
         tables = []
 
         for table_name, table_description in TABLE_DOCS.items():
-            schema_rows = connection.execute(
-                f"DESCRIBE {table_name}"
-            ).fetchall()
+            schema_rows = connection.execute(f"DESCRIBE {table_name}").fetchall()
 
             columns = []
 
@@ -332,45 +321,41 @@ def get_data_catalog():
                 column_type = column[1]
                 nullable = column[2] == "YES"
 
-                columns.append({
-                    "name": column_name,
-                    "type": column_type,
-                    "nullable": nullable,
-                    "description": COLUMN_DOCS.get(
-                        table_name, {}
-                    ).get(
-                        column_name,
-                        "Sem descrição disponível.",
-                    ),
-                })
+                columns.append(
+                    {
+                        "name": column_name,
+                        "type": column_type,
+                        "nullable": nullable,
+                        "description": COLUMN_DOCS.get(table_name, {}).get(
+                            column_name,
+                            "Sem descrição disponível.",
+                        ),
+                    }
+                )
 
             total_rows = connection.execute(
                 f"SELECT COUNT(*) FROM {table_name}"
             ).fetchone()[0]
 
-            sample_cursor = connection.execute(
-                f"SELECT * FROM {table_name} LIMIT 5"
-            )
+            sample_cursor = connection.execute(f"SELECT * FROM {table_name} LIMIT 5")
 
             sample_columns = [
-                description[0]
-                for description in sample_cursor.description
+                description[0] for description in sample_cursor.description
             ]
 
             sample_rows = sample_cursor.fetchall()
 
-            sample = [
-                dict(zip(sample_columns, row))
-                for row in sample_rows
-            ]
+            sample = [dict(zip(sample_columns, row)) for row in sample_rows]
 
-            tables.append({
-                "name": table_name,
-                "description": table_description,
-                "total_rows": total_rows,
-                "columns": columns,
-                "sample": sample,
-            })
+            tables.append(
+                {
+                    "name": table_name,
+                    "description": table_description,
+                    "total_rows": total_rows,
+                    "columns": columns,
+                    "sample": sample,
+                }
+            )
 
         return {
             "database": "DuckDB",
@@ -381,9 +366,7 @@ def get_data_catalog():
         }
 
     except Exception as exc:
-        logger.exception(
-            "Erro ao consultar o catálogo de dados."
-        )
+        logger.exception("Erro ao consultar o catálogo de dados.")
 
         raise HTTPException(
             status_code=500,
@@ -429,10 +412,7 @@ def analyze_business(
     selected_provider = request.provider
     selected_model = DEFAULT_MODELS[selected_provider]
 
-    with llm_metrics.track_analysis(
-        analysis_id
-    ) as individual_metrics:
-
+    with llm_metrics.track_analysis(analysis_id) as individual_metrics:
         try:
             analyst = BusinessAnalyst(
                 cache=analysis_cache,
@@ -441,9 +421,7 @@ def analyze_business(
 
             selected_model = analyst.model
 
-            result = analyst.analyze(
-                request.question
-            )
+            result = analyst.analyze(request.question)
 
             selected_model = analyst.model
             status = "success"
@@ -451,9 +429,7 @@ def analyze_business(
             result["analysis_id"] = analysis_id
             result["provider"] = selected_provider
             result["model"] = selected_model
-            result["llm_metrics"] = (
-                individual_metrics.snapshot()
-            )
+            result["llm_metrics"] = individual_metrics.snapshot()
 
             logger.info(
                 "Análise de negócio concluída.",
@@ -571,8 +547,7 @@ def analyze_business(
                 status_code=502,
                 detail={
                     "message": (
-                        "O serviço de inteligência artificial "
-                        "apresentou um erro."
+                        "O serviço de inteligência artificial apresentou um erro."
                     ),
                     "analysis_id": analysis_id,
                 },
@@ -633,35 +608,20 @@ def analyze_business(
                     status=status,
                     total_time_ms=total_time_ms,
                     cache_hit=(
-                        result.get("cache_hit", False)
-                        if result is not None
-                        else False
+                        result.get("cache_hit", False) if result is not None else False
                     ),
                     llm_metrics=metrics_snapshot,
                     steps=steps_to_persist,
                     error_type=error_type,
                     error_message=error_message,
                     sql=sql_to_persist,
-                    results=(
-                        result.get("results", [])
-                        if result is not None
-                        else []
-                    ),
+                    queries=(result.get("queries", []) if result is not None else []),
+                    results=(result.get("results", []) if result is not None else []),
                     total_results=(
-                        result.get("total_results", 0)
-                        if result is not None
-                        else 0
+                        result.get("total_results", 0) if result is not None else 0
                     ),
-                    answer=(
-                        result.get("answer")
-                        if result is not None
-                        else None
-                    ),
-                    chart=(
-                        result.get("chart")
-                        if result is not None
-                        else None
-                    ),
+                    answer=(result.get("answer") if result is not None else None),
+                    chart=(result.get("chart") if result is not None else None),
                     provider=selected_provider,
                     model=selected_model,
                 )
@@ -742,9 +702,7 @@ def get_analysis_history(
         ) from exc
 
     except Exception as exc:
-        logger.exception(
-            "Erro ao consultar o histórico de análises."
-        )
+        logger.exception("Erro ao consultar o histórico de análises.")
 
         raise HTTPException(
             status_code=500,
@@ -763,9 +721,7 @@ def get_analysis_history_detail(analysis_id: str):
         raise
 
     except Exception as exc:
-        logger.exception(
-            "Erro ao consultar os detalhes da análise."
-        )
+        logger.exception("Erro ao consultar os detalhes da análise.")
 
         raise HTTPException(
             status_code=500,
@@ -939,9 +895,7 @@ def get_analysis_projects():
         }
 
     except Exception as exc:
-        logger.exception(
-            "Erro ao consultar os projetos."
-        )
+        logger.exception("Erro ao consultar os projetos.")
 
         raise HTTPException(
             status_code=500,
@@ -966,9 +920,7 @@ def create_analysis_project(request: ProjectCreateRequest):
         ) from exc
 
     except Exception as exc:
-        logger.exception(
-            "Erro ao criar projeto."
-        )
+        logger.exception("Erro ao criar projeto.")
 
         raise HTTPException(
             status_code=500,
@@ -1030,9 +982,7 @@ def remove_analysis_project(project_id: str):
         analysis_history.delete_project(project_id)
 
         return {
-            "message": (
-                "Projeto excluído. As análises foram preservadas."
-            ),
+            "message": ("Projeto excluído. As análises foram preservadas."),
             "project_id": project_id,
         }
 
@@ -1043,9 +993,7 @@ def remove_analysis_project(project_id: str):
         ) from exc
 
     except Exception as exc:
-        logger.exception(
-            "Erro ao excluir projeto."
-        )
+        logger.exception("Erro ao excluir projeto.")
 
         raise HTTPException(
             status_code=500,

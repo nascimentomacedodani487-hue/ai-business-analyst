@@ -1,4 +1,3 @@
-
 """
 Contratos e exceções comuns para provedores de modelos de linguagem.
 """

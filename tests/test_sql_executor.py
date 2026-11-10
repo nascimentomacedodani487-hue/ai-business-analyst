@@ -1,4 +1,3 @@
-
 import pytest
 
 from ai_analyst.agent.sql_executor import SQLExecutor
@@ -30,6 +29,4 @@ def test_execute_valid_query(executor):
 
 def test_reject_unsafe_query(executor):
     with pytest.raises(SQLGuardrailError):
-        executor.execute(
-            "SELECT * FROM read_csv('arquivo.csv')"
-        )
+        executor.execute("SELECT * FROM read_csv('arquivo.csv')")

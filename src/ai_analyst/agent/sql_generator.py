@@ -1,4 +1,4 @@
-﻿"""
+"""
 Geração e validação de consultas SQL utilizando IA.
 """
 
@@ -26,16 +26,12 @@ class SQLGenerator:
 
         if provider is not None and gemini is not None:
             if provider is not gemini:
-                raise ValueError(
-                    "Informe apenas um provedor de IA."
-                )
+                raise ValueError("Informe apenas um provedor de IA.")
 
         self.provider = provider or gemini
 
         if self.provider is None:
-            raise ValueError(
-                "Um provedor de IA deve ser informado."
-            )
+            raise ValueError("Um provedor de IA deve ser informado.")
 
         # Alias temporário para compatibilidade com testes e integrações
         # que ainda acessam o atributo gemini.
@@ -47,9 +43,7 @@ class SQLGenerator:
         """Gera e valida uma consulta SQL."""
 
         if not question or not question.strip():
-            raise ValueError(
-                "A pergunta não pode estar vazia."
-            )
+            raise ValueError("A pergunta não pode estar vazia.")
 
         prompt = f"""
 Transforme a pergunta abaixo em uma consulta SQL DuckDB.
@@ -94,19 +88,13 @@ REGRAS:
         """
 
         if not question or not question.strip():
-            raise ValueError(
-                "A pergunta original não pode estar vazia."
-            )
+            raise ValueError("A pergunta original não pode estar vazia.")
 
         if not failed_sql or not failed_sql.strip():
-            raise ValueError(
-                "A consulta SQL com falha não pode estar vazia."
-            )
+            raise ValueError("A consulta SQL com falha não pode estar vazia.")
 
         if not error_message or not error_message.strip():
-            raise ValueError(
-                "A mensagem de erro não pode estar vazia."
-            )
+            raise ValueError("A mensagem de erro não pode estar vazia.")
 
         prompt = f"""
 A consulta SQL gerada anteriormente apresentou um erro de sintaxe ou de execução

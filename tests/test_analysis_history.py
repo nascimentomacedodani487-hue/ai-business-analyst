@@ -1,4 +1,3 @@
-
 import json
 import sqlite3
 
@@ -17,6 +16,7 @@ def history(tmp_path):
 # Testes básicos do histórico
 # =========================================================
 
+
 def test_initializes_database(history):
     assert history.count_analyses() == 0
 
@@ -32,9 +32,7 @@ def test_saves_and_retrieves_analysis(history):
             "requests": {"total": 2, "successful": 2},
             "tokens": {"total": 500},
         },
-        steps=[
-            {"name": "sql_generation", "duration_ms": 800}
-        ],
+        steps=[{"name": "sql_generation", "duration_ms": 800}],
     )
 
     result = history.get_analysis("analysis-001")
@@ -284,6 +282,7 @@ def test_deletes_analysis(history):
 # Testes de gerenciamento de análises
 # =========================================================
 
+
 def test_renames_analysis(history):
     history.save_analysis(
         analysis_id="rename-001",
@@ -291,10 +290,13 @@ def test_renames_analysis(history):
         status="success",
     )
 
-    assert history.rename_analysis(
-        "rename-001",
-        "Taxa de cancelamento por região",
-    ) is True
+    assert (
+        history.rename_analysis(
+            "rename-001",
+            "Taxa de cancelamento por região",
+        )
+        is True
+    )
 
     result = history.get_analysis("rename-001")
 
@@ -371,10 +373,13 @@ def test_unlocks_analysis_and_allows_modifications(history):
     history.set_analysis_locked("locked-002", True)
     history.set_analysis_locked("locked-002", False)
 
-    assert history.rename_analysis(
-        "locked-002",
-        "Análise desbloqueada",
-    ) is True
+    assert (
+        history.rename_analysis(
+            "locked-002",
+            "Análise desbloqueada",
+        )
+        is True
+    )
 
 
 def test_archives_and_restores_analysis(history):
@@ -384,10 +389,13 @@ def test_archives_and_restores_analysis(history):
         status="success",
     )
 
-    assert history.set_analysis_archived(
-        "archive-001",
-        True,
-    ) is True
+    assert (
+        history.set_analysis_archived(
+            "archive-001",
+            True,
+        )
+        is True
+    )
 
     active = history.list_analyses()
 
@@ -398,10 +406,13 @@ def test_archives_and_restores_analysis(history):
     assert archived["pagination"]["total"] == 1
     assert archived["items"][0]["is_archived"] is True
 
-    assert history.set_analysis_archived(
-        "archive-001",
-        False,
-    ) is True
+    assert (
+        history.set_analysis_archived(
+            "archive-001",
+            False,
+        )
+        is True
+    )
 
     restored = history.list_analyses()
 
@@ -425,9 +436,7 @@ def test_searches_analysis_by_title_and_question(history):
     assert by_title["pagination"]["total"] == 1
     assert by_title["items"][0]["analysis_id"] == "search-001"
 
-    by_question = history.list_analyses(
-        search="pedidos foram entregues"
-    )
+    by_question = history.list_analyses(search="pedidos foram entregues")
 
     assert by_question["pagination"]["total"] == 1
 
@@ -435,6 +444,7 @@ def test_searches_analysis_by_title_and_question(history):
 # =========================================================
 # Testes de projetos
 # =========================================================
+
 
 def test_creates_and_lists_projects(history):
     project = history.create_project(
@@ -461,10 +471,13 @@ def test_moves_analysis_between_projects(history):
 
     project = history.create_project("Vendas")
 
-    assert history.move_analysis_to_project(
-        "project-001",
-        project["project_id"],
-    ) is True
+    assert (
+        history.move_analysis_to_project(
+            "project-001",
+            project["project_id"],
+        )
+        is True
+    )
 
     result = history.get_analysis("project-001")
 
@@ -573,10 +586,13 @@ def test_save_analysis_preserves_custom_metadata(history):
 def test_project_name_can_be_updated(history):
     project = history.create_project("Nome antigo")
 
-    assert history.rename_project(
-        project["project_id"],
-        "Nome atualizado",
-    ) is True
+    assert (
+        history.rename_project(
+            project["project_id"],
+            "Nome atualizado",
+        )
+        is True
+    )
 
     updated = history.get_project(project["project_id"])
 

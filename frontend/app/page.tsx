@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import AnalyticsChart from "@/components/analytics-chart";
 import AgentTimeline from "@/components/agent-timeline";
 import HistoryManager from "@/components/history-manager";
+import ResultsTable from "@/components/results-table";
 import {
   fetchAnalysisHistory,
   fetchAnalysisDetail,
@@ -578,6 +579,8 @@ export default function Home() {
                 : undefined
             }));
 
+          // Sincronização intencional com o armazenamento local após a hidratação.
+          // eslint-disable-next-line react-hooks/set-state-in-effect
           setHistory(validItems.slice(0, MAX_HISTORY_ITEMS));
           setHistoryTotal(validItems.length);
         }
@@ -644,6 +647,8 @@ export default function Home() {
 
   // Carrega o histórico persistente ao abrir a aplicação.
   useEffect(() => {
+    // A chamada inicia uma sincronização assíncrona com a API.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadHistory();
   }, [loadHistory]);
 
@@ -735,6 +740,8 @@ export default function Home() {
 
   useEffect(() => {
     if (activePage === "overview" || activePage === "analyst") {
+      // A chamada inicia uma sincronização assíncrona com a API.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       void loadLLMMetrics();
     }
   }, [activePage, loadLLMMetrics]);
@@ -1054,6 +1061,14 @@ export default function Home() {
       return (
         <span className="rounded-full bg-red-500/10 px-2 py-1 text-[9px] text-red-400">
           Falha
+        </span>
+      );
+    }
+
+    if (item.partial_success) {
+      return (
+        <span className="rounded-full bg-amber-500/10 px-2 py-1 text-[9px] text-amber-300">
+          Concluída parcialmente
         </span>
       );
     }
@@ -2101,88 +2116,219 @@ export default function Home() {
                           </p>
                         </div>
 
-                        {analysis.chart && (
-                          <AnalyticsChart
-                            data={analysis.results}
-                            type={analysis.chart.type}
-                            title={analysis.chart.title}
-                            labelKey={analysis.chart.label_key}
-                            valueKey={analysis.chart.value_key}
-                          />
-                        )}
+                        {/* MULTI-QUERY RESULTS */}
+                        {analysis.queries && analysis.queries.length > 0 ? (
+                          <div className="space-y-5">
+                            <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-4">
+                              <p className="text-xs font-semibold text-zinc-300">
+                                Resumo das consultas
+                              </p>
 
-                        <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-5">
-                          <p className="text-xs font-semibold text-zinc-300">
-                            Dados consultados
-                          </p>
+                              <div className="mt-3 flex flex-wrap gap-2">
+                                <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-3 py-1.5 text-[10px] text-zinc-300">
+                                  {analysis.query_count ?? analysis.queries.length} consulta(s)
+                                </span>
 
-                          {analysis.results.length > 0 ? (
-                            <div className="mt-4 overflow-x-auto">
-                              <table className="w-full text-left text-xs">
-                                <thead>
-                                  <tr className="border-b border-white/[0.08] text-zinc-500">
-                                    {Object.keys(
-                                      analysis.results[0]
-                                    ).map((column) => (
-                                      <th
-                                        key={column}
-                                        className="px-3 py-3 font-medium"
-                                      >
-                                        {column}
-                                      </th>
-                                    ))}
-                                  </tr>
-                                </thead>
+                                <span className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1.5 text-[10px] text-emerald-400">
+                                  {analysis.successful_queries ?? 0} concluída(s)
+                                </span>
 
-                                <tbody>
-                                  {analysis.results
-                                    .slice(0, 10)
-                                    .map((row, index) => (
-                                      <tr
-                                        key={index}
-                                        className="border-b border-white/[0.04] text-zinc-300"
-                                      >
-                                        {Object.values(row).map(
-                                          (value, cellIndex) => (
-                                            <td
-                                              key={cellIndex}
-                                              className="px-3 py-3"
-                                            >
-                                              {formatValue(value)}
-                                            </td>
-                                          )
-                                        )}
-                                      </tr>
-                                    ))}
-                                </tbody>
-                              </table>
+                                {(analysis.unsupported_queries ?? 0) > 0 && (
+                                  <span className="rounded-full border border-amber-500/20 bg-amber-500/10 px-3 py-1.5 text-[10px] text-amber-300">
+                                    {analysis.unsupported_queries} não suportada(s)
+                                  </span>
+                                )}
 
-                              {analysis.results.length > 10 && (
-                                <p className="mt-3 text-[10px] text-zinc-500">
-                                  Exibindo os primeiros 10 de{" "}
-                                  {analysis.total_results} resultados.
+                                {(analysis.failed_queries ?? 0) > 0 && (
+                                  <span className="rounded-full border border-red-500/20 bg-red-500/10 px-3 py-1.5 text-[10px] text-red-400">
+                                    {analysis.failed_queries} falha(s)
+                                  </span>
+                                )}
+                              </div>
+
+                              {analysis.partial_success && (
+                                <p className="mt-3 text-xs leading-6 text-amber-400">
+                                  {(analysis.unsupported_queries ?? 0) > 0
+                                    ? (analysis.failed_queries ?? 0) > 0
+                                      ? `A análise foi concluída parcialmente: ${analysis.unsupported_queries} consulta(s) não suportada(s) pelos dados e ${analysis.failed_queries} falha(s) operacional(is). Os resultados válidos foram preservados.`
+                                      : analysis.unsupported_queries === 1
+                                        ? "A análise foi concluída parcialmente. Uma consulta não pôde ser realizada devido a uma limitação dos dados disponíveis. Os demais resultados foram preservados."
+                                        : `A análise foi concluída parcialmente. ${analysis.unsupported_queries} consultas não puderam ser realizadas devido a limita??es dos dados disponíveis. Os demais resultados foram preservados.`
+                                    : "A análise foi concluída parcialmente. Uma ou mais consultas apresentaram falhas operacionais, mas os resultados das demais foram preservados."}
                                 </p>
                               )}
                             </div>
-                          ) : (
-                            <p className="mt-3 text-xs text-zinc-500">
-                              Nenhum registro encontrado.
-                            </p>
-                          )}
-                        </div>
 
-                        <details className="group rounded-xl border border-white/[0.07] bg-white/[0.02]">
-                          <summary className="flex cursor-pointer items-center justify-between p-4 text-xs font-medium text-zinc-400 hover:text-zinc-200">
-                            <span>Consultar SQL gerado pela IA</span>
-                            <span className="transition group-open:rotate-180">
-                              ⌄
-                            </span>
-                          </summary>
+                            {analysis.queries.map((query, index) => (
+                              <div
+                                key={query.id}
+                                className="space-y-4 rounded-xl border border-white/[0.07] bg-white/[0.02] p-5"
+                              >
+                                <div className="flex flex-wrap items-center justify-between gap-3">
+                                  <div>
+                                    <p className="text-[10px] font-semibold uppercase tracking-wider text-violet-400">
+                                      Consulta {index + 1}
+                                    </p>
 
-                          <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words border-t border-white/[0.06] p-4 text-xs leading-6 text-blue-300">
-                            <code>{analysis.sql}</code>
-                          </pre>
-                        </details>
+                                    <h3 className="mt-2 text-sm font-semibold text-zinc-200">
+                                      {query.objective}
+                                    </h3>
+                                  </div>
+
+                                  <span
+                                    className={`rounded-full px-2.5 py-1 text-[10px] font-medium ${
+                                      query.failure_type === "unsupported_capability"
+                                        ? "border border-amber-500/20 bg-amber-500/10 text-amber-300"
+                                        : query.status === "success"
+                                          ? "border border-emerald-500/20 bg-emerald-500/10 text-emerald-400"
+                                          : "border border-red-500/20 bg-red-500/10 text-red-400"
+                                    }`}
+                                  >
+                                    {query.failure_type === "unsupported_capability"
+                                      ? "Não suportada"
+                                      : query.status === "success"
+                                        ? "Concluída"
+                                        : "Falhou"}
+                                  </span>
+                                </div>
+
+                                <p className="text-xs leading-6 text-zinc-400">
+                                  {query.question}
+                                </p>
+
+                                {query.status === "failure" &&
+                                  query.failure_type === "unsupported_capability" && (
+                                    <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.05] p-4">
+                                      <p className="text-xs font-semibold text-amber-300">
+                                        Limitação dos dados
+                                      </p>
+
+                                      <p className="mt-2 break-words text-xs leading-6 text-zinc-400">
+                                        {query.error || "Os dados disponíveis não permitem realizar esta análise."}
+                                      </p>
+                                    </div>
+                                )}
+
+                                {query.status === "failure" &&
+                                  query.failure_type !== "unsupported_capability" && (
+                                    <div className="rounded-lg border border-red-500/20 bg-red-500/[0.05] p-4">
+                                      <p className="text-xs font-semibold text-red-400">
+                                        Erro ao executar esta consulta
+                                      </p>
+
+                                      <p className="mt-2 break-words text-xs leading-6 text-zinc-400">
+                                        {query.error || "Não foi possível executar esta consulta."}
+                                      </p>
+                                    </div>
+                                  )}
+
+                                {query.status === "success" && (
+                                  <>
+                                    <div className="flex flex-wrap gap-2">
+                                      <span className="rounded-full bg-emerald-500/10 px-2.5 py-1 text-[10px] text-emerald-400">
+                                        {query.total_results} resultado(s)
+                                      </span>
+
+                                      {typeof query.metrics?.total_time_ms === "number" && (
+                                        <span className="rounded-full bg-white/[0.04] px-2.5 py-1 text-[10px] text-zinc-400">
+                                          {query.metrics.total_time_ms.toFixed(2)} ms
+                                        </span>
+                                      )}
+                                    </div>
+
+                                    {query.chart && (
+                                      <AnalyticsChart
+                                        data={query.chart.data ?? query.results}
+                                        type={query.chart.type}
+                                        title={query.chart.title}
+                                        labelKey={query.chart.label_key}
+                                        valueKey={query.chart.value_key}
+                                        series={query.chart.series}
+                                      />
+                                    )}
+
+                                    <div className="rounded-lg border border-white/[0.06] bg-black/10 p-4">
+                                      <p className="text-xs font-semibold text-zinc-300">
+                                        Dados consultados
+                                      </p>
+
+                                      {query.results.length > 0 ? (
+                                        <ResultsTable
+                                          rows={query.results}
+                                          totalResults={query.total_results}
+                                          formatValue={formatValue}
+                                        />
+                                      ) : (
+                                        <p className="mt-3 text-xs text-zinc-500">
+                                          Nenhum registro encontrado.
+                                        </p>
+                                      )}
+                                    </div>
+                                  </>
+                                )}
+
+                                {query.sql && (
+                                  <details className="group rounded-lg border border-white/[0.07] bg-white/[0.02]">
+                                    <summary className="flex cursor-pointer items-center justify-between p-4 text-xs font-medium text-zinc-400 hover:text-zinc-200">
+                                      <span>Consultar SQL desta consulta</span>
+                                      <span className="transition group-open:rotate-180">
+                                        ⌄
+                                      </span>
+                                    </summary>
+
+                                    <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words border-t border-white/[0.06] p-4 text-xs leading-6 text-blue-300">
+                                      <code>{query.sql}</code>
+                                    </pre>
+                                  </details>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <>
+                            {analysis.chart && (
+                              <AnalyticsChart
+                                data={analysis.chart.data ?? analysis.results}
+                                type={analysis.chart.type}
+                                title={analysis.chart.title}
+                                labelKey={analysis.chart.label_key}
+                                valueKey={analysis.chart.value_key}
+                                series={analysis.chart.series}
+                              />
+                            )}
+
+                            <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-5">
+                              <p className="text-xs font-semibold text-zinc-300">
+                                Dados consultados
+                              </p>
+
+                              {analysis.results.length > 0 ? (
+                                <ResultsTable
+                                  rows={analysis.results}
+                                  totalResults={analysis.total_results}
+                                  formatValue={formatValue}
+                                />
+                              ) : (
+                                <p className="mt-3 text-xs text-zinc-500">
+                                  Nenhum registro encontrado.
+                                </p>
+                              )}
+                            </div>
+
+                            <details className="group rounded-xl border border-white/[0.07] bg-white/[0.02]">
+                              <summary className="flex cursor-pointer items-center justify-between p-4 text-xs font-medium text-zinc-400 hover:text-zinc-200">
+                                <span>Consultar SQL gerado pela IA</span>
+                                <span className="transition group-open:rotate-180">
+                                  ⌄
+                                </span>
+                              </summary>
+
+                              <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words border-t border-white/[0.06] p-4 text-xs leading-6 text-blue-300">
+                                <code>{analysis.sql}</code>
+                              </pre>
+                            </details>
+                          </>
+                        )}
                       </>
                     )}
                   </div>

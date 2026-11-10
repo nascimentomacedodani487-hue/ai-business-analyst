@@ -1,11 +1,10 @@
-
-import pytest
 from uuid import UUID
 
+import pytest
 from fastapi.testclient import TestClient
 
-from ai_analyst.api.main import app, analysis_cache
 from ai_analyst.agent.business_analyst import BusinessAnalyst
+from ai_analyst.api.main import analysis_cache, app
 from ai_analyst.data.history import AnalysisHistory
 from ai_analyst.data.schema import TABLE_DOCS
 from ai_analyst.llm.base import (
@@ -14,16 +13,13 @@ from ai_analyst.llm.base import (
     LLMTimeoutError,
 )
 
-
 client = TestClient(app)
 
 
 def create_test_history(monkeypatch, tmp_path):
     """Substitui o histórico global por um banco SQLite temporário."""
 
-    history = AnalysisHistory(
-        tmp_path / "test_analysis_history.sqlite3"
-    )
+    history = AnalysisHistory(tmp_path / "test_analysis_history.sqlite3")
 
     monkeypatch.setattr(
         "ai_analyst.api.main.analysis_history",
@@ -149,9 +145,7 @@ def test_analyze_handles_rate_limit_error(monkeypatch, tmp_path):
     """Verifica o HTTP 503 e a identificação da análise."""
 
     def simulate_quota_error(self, question):
-        raise LLMRateLimitError(
-            "Limite de requisições atingido."
-        )
+        raise LLMRateLimitError("Limite de requisições atingido.")
 
     monkeypatch.setattr(
         BusinessAnalyst,
@@ -170,9 +164,7 @@ def test_analyze_handles_rate_limit_error(monkeypatch, tmp_path):
 
     assert isinstance(detail, dict)
 
-    assert "limite de requisições" in (
-        detail["message"].lower()
-    )
+    assert "limite de requisições" in (detail["message"].lower())
 
     UUID(detail["analysis_id"])
 
@@ -182,9 +174,7 @@ def test_analyze_handles_timeout_error(monkeypatch, tmp_path):
     """Verifica o HTTP 504 e a identificação da análise."""
 
     def simulate_timeout(self, question):
-        raise LLMTimeoutError(
-            "Tempo limite excedido."
-        )
+        raise LLMTimeoutError("Tempo limite excedido.")
 
     monkeypatch.setattr(
         BusinessAnalyst,
@@ -213,9 +203,7 @@ def test_analyze_handles_provider_error(monkeypatch, tmp_path):
     """Verifica o HTTP 502 e a identificação da análise."""
 
     def simulate_provider_error(self, question):
-        raise LLMProviderError(
-            "Provedor indisponível."
-        )
+        raise LLMProviderError("Provedor indisponível.")
 
     monkeypatch.setattr(
         BusinessAnalyst,
@@ -234,9 +222,7 @@ def test_analyze_handles_provider_error(monkeypatch, tmp_path):
 
     assert isinstance(detail, dict)
 
-    assert "serviço de inteligência artificial" in (
-        detail["message"].lower()
-    )
+    assert "serviço de inteligência artificial" in (detail["message"].lower())
 
     UUID(detail["analysis_id"])
 
@@ -341,21 +327,14 @@ def test_api_reuses_cached_analysis(monkeypatch, tmp_path):
 
     assert first_result == second_result
 
-    first_step_names = [
-        step["name"] for step in first_steps
-    ]
+    first_step_names = [step["name"] for step in first_steps]
 
     assert "sql_generation" in first_step_names
     assert "response_generation" in first_step_names
 
-    assert all(
-        step["status"] == "completed"
-        for step in first_steps
-    )
+    assert all(step["status"] == "completed" for step in first_steps)
 
-    second_step_names = [
-        step["name"] for step in second_steps
-    ]
+    second_step_names = [step["name"] for step in second_steps]
 
     assert "cache_lookup" in second_step_names
     assert "cache_hit" in second_step_names
@@ -363,10 +342,7 @@ def test_api_reuses_cached_analysis(monkeypatch, tmp_path):
     assert "sql_generation" not in second_step_names
     assert "response_generation" not in second_step_names
 
-    assert all(
-        step["status"] == "completed"
-        for step in second_steps
-    )
+    assert all(step["status"] == "completed" for step in second_steps)
 
     assert first_metrics["cache_hit"] is False
     assert "sql_generation_ms" in first_metrics
@@ -445,9 +421,7 @@ def test_data_catalog_returns_documented_tables(monkeypatch):
                     (1, "delivered"),
                 ]
 
-            raise AssertionError(
-                f"fetchall inesperado para: {self.last_query}"
-            )
+            raise AssertionError(f"fetchall inesperado para: {self.last_query}")
 
         def fetchone(self):
             return (42,)
@@ -475,10 +449,7 @@ def test_data_catalog_returns_documented_tables(monkeypatch):
     assert data["tables_count"] == len(TABLE_DOCS)
     assert len(data["tables"]) == len(TABLE_DOCS)
 
-    returned_tables = {
-        table["name"]: table
-        for table in data["tables"]
-    }
+    returned_tables = {table["name"]: table for table in data["tables"]}
 
     assert set(returned_tables) == set(TABLE_DOCS)
 
@@ -610,10 +581,7 @@ def test_analysis_history_lists_records(monkeypatch, tmp_path):
     assert data["pagination"]["offset"] == 0
     assert data["pagination"]["has_more"] is False
 
-    returned_ids = {
-        item["analysis_id"]
-        for item in data["items"]
-    }
+    returned_ids = {item["analysis_id"] for item in data["items"]}
 
     assert returned_ids == {
         "analysis-success-001",
@@ -694,15 +662,9 @@ def test_analysis_history_filters_by_status(monkeypatch, tmp_path):
     assert success_data["items"][0]["status"] == "success"
     assert failure_data["items"][0]["status"] == "failure"
 
-    assert (
-        success_data["items"][0]["analysis_id"]
-        == "analysis-success-001"
-    )
+    assert success_data["items"][0]["analysis_id"] == "analysis-success-001"
 
-    assert (
-        failure_data["items"][0]["analysis_id"]
-        == "analysis-failure-001"
-    )
+    assert failure_data["items"][0]["analysis_id"] == "analysis-failure-001"
 
 
 def test_analysis_history_returns_complete_details(
@@ -714,9 +676,7 @@ def test_analysis_history_returns_complete_details(
     history = create_test_history(monkeypatch, tmp_path)
     seed_test_history(history)
 
-    response = client.get(
-        "/analyses/history/analysis-success-001"
-    )
+    response = client.get("/analyses/history/analysis-success-001")
 
     assert response.status_code == 200
 
@@ -751,15 +711,11 @@ def test_analysis_history_returns_404_for_missing_analysis(
 
     create_test_history(monkeypatch, tmp_path)
 
-    response = client.get(
-        "/analyses/history/analysis-does-not-exist"
-    )
+    response = client.get("/analyses/history/analysis-does-not-exist")
 
     assert response.status_code == 404
 
-    assert response.json()["detail"] == (
-        "Análise não encontrada."
-    )
+    assert response.json()["detail"] == ("Análise não encontrada.")
 
 
 def test_analysis_history_rejects_invalid_status(
@@ -831,18 +787,14 @@ def test_analysis_history_persists_after_reinitialization(
     )
 
     # Simula uma nova inicialização da aplicação.
-    reopened_history = AnalysisHistory(
-        history.database_path
-    )
+    reopened_history = AnalysisHistory(history.database_path)
 
     monkeypatch.setattr(
         "ai_analyst.api.main.analysis_history",
         reopened_history,
     )
 
-    response = client.get(
-        "/analyses/history/persistent-analysis-001"
-    )
+    response = client.get("/analyses/history/persistent-analysis-001")
 
     assert response.status_code == 200
 
@@ -948,17 +900,13 @@ def test_api_persists_failed_analyses(
     assert analysis["error_message"] == error_message
 
     # Verifica as métricas individuais.
-    assert analysis["llm_metrics"]["analysis_id"] == (
-        response_analysis_id
-    )
+    assert analysis["llm_metrics"]["analysis_id"] == (response_analysis_id)
 
     # A falha acontece antes de uma análise ser concluída.
     assert analysis["steps"] == []
 
     # Confirma que o endpoint de detalhes recupera o mesmo registro.
-    detail_response = client.get(
-        f"/analyses/history/{response_analysis_id}"
-    )
+    detail_response = client.get(f"/analyses/history/{response_analysis_id}")
 
     assert detail_response.status_code == 200
 
@@ -968,7 +916,6 @@ def test_api_persists_failed_analyses(
     assert saved_detail["status"] == "failure"
     assert saved_detail["error_type"] == error_class.__name__
     assert saved_detail["error_message"] == error_message
-
 
 
 # ============================================================
@@ -1044,9 +991,7 @@ def test_locked_analysis_rejects_modifications(
     assert archive.status_code == 409
     assert delete.status_code == 409
 
-    assert history.get_analysis(
-        "analysis-success-001"
-    ) is not None
+    assert history.get_analysis("analysis-success-001") is not None
 
 
 def test_locked_analysis_can_be_unlocked(
@@ -1154,16 +1099,14 @@ def test_analysis_search_filters_title_and_question(
     )
 
     assert by_title.status_code == 200
-    assert [
-        item["analysis_id"]
-        for item in by_title.json()["items"]
-    ] == ["analysis-success-001"]
+    assert [item["analysis_id"] for item in by_title.json()["items"]] == [
+        "analysis-success-001"
+    ]
 
     assert by_question.status_code == 200
-    assert [
-        item["analysis_id"]
-        for item in by_question.json()["items"]
-    ] == ["analysis-failure-001"]
+    assert [item["analysis_id"] for item in by_question.json()["items"]] == [
+        "analysis-failure-001"
+    ]
 
 
 def test_analysis_projects_can_be_created_renamed_and_listed(
@@ -1196,8 +1139,7 @@ def test_analysis_projects_can_be_created_renamed_and_listed(
 
     assert listing.status_code == 200
     assert any(
-        project["project_id"] == project_id
-        and project["name"] == "Vendas 2026"
+        project["project_id"] == project_id and project["name"] == "Vendas 2026"
         for project in listing.json()["items"]
     )
 
@@ -1235,10 +1177,9 @@ def test_analysis_can_be_moved_to_project(
     )
 
     assert filtered.status_code == 200
-    assert [
-        item["analysis_id"]
-        for item in filtered.json()["items"]
-    ] == ["analysis-success-001"]
+    assert [item["analysis_id"] for item in filtered.json()["items"]] == [
+        "analysis-success-001"
+    ]
 
 
 def test_deleting_project_preserves_its_analyses(
@@ -1310,6 +1251,7 @@ def test_api_history_management_endpoints_added():
     """Marcador para impedir a duplicacao deste bloco de testes."""
     assert True
 
+
 def test_api_persists_steps_when_analysis_fails_during_execution(
     monkeypatch,
     tmp_path,
@@ -1330,9 +1272,7 @@ def test_api_persists_steps_when_analysis_fails_during_execution(
 
     response = client.post(
         "/analyze",
-        json={
-            "question": "Qual foi o desempenho das entregas?"
-        },
+        json={"question": "Qual foi o desempenho das entregas?"},
     )
 
     assert response.status_code == 500
@@ -1352,3 +1292,134 @@ def test_api_persists_steps_when_analysis_fails_during_execution(
     assert step["name"] == "database_version"
     assert step["status"] == "failed"
     assert step["duration_ms"] >= 0
+
+
+# ============================================================
+# TESTES DE PERSISTÊNCIA DE MÚLTIPLAS CONSULTAS
+# ============================================================
+
+
+def test_api_persists_multiple_queries_in_analysis_history(
+    monkeypatch,
+    tmp_path,
+):
+    """
+    Verifica se a API persiste todas as consultas independentes
+    e se o endpoint de detalhes recupera os dados integralmente.
+    """
+
+    history = create_test_history(monkeypatch, tmp_path)
+
+    expected_queries = [
+        {
+            "objective": "Quantidade de pedidos por status",
+            "sql": ("SELECT status, COUNT(*) AS total FROM orders GROUP BY status"),
+            "status": "success",
+            "results": [
+                {
+                    "status": "delivered",
+                    "total": 120,
+                },
+            ],
+            "total_results": 1,
+            "chart": None,
+            "error": None,
+            "metrics": {
+                "sql_generation_ms": 12.5,
+                "sql_execution_ms": 3.2,
+                "total_time_ms": 15.7,
+            },
+        },
+        {
+            "objective": "Valor médio dos pedidos",
+            "sql": ("SELECT AVG(order_value) AS average_value FROM orders"),
+            "status": "success",
+            "results": [
+                {
+                    "average_value": 85.50,
+                },
+            ],
+            "total_results": 1,
+            "chart": None,
+            "error": None,
+            "metrics": {
+                "sql_generation_ms": 10.0,
+                "sql_execution_ms": 2.8,
+                "total_time_ms": 12.8,
+            },
+        },
+    ]
+
+    def fake_analyze(self, question):
+        return {
+            "sql": expected_queries[0]["sql"],
+            "results": expected_queries[0]["results"],
+            "total_results": 1,
+            "answer": "Análise concluída com duas consultas.",
+            "chart": None,
+            "steps": [
+                {
+                    "name": "query_planning",
+                    "status": "completed",
+                },
+                {
+                    "name": "multi_query_execution",
+                    "status": "completed",
+                },
+            ],
+            "queries": expected_queries,
+            "cache_hit": False,
+        }
+
+    monkeypatch.setattr(
+        BusinessAnalyst,
+        "analyze",
+        fake_analyze,
+    )
+
+    response = client.post(
+        "/analyze",
+        json={
+            "question": (
+                "Analise a quantidade de pedidos por status "
+                "e o valor médio dos pedidos."
+            ),
+        },
+    )
+
+    assert response.status_code == 200
+
+    response_data = response.json()
+    analysis_id = response_data["analysis_id"]
+
+    # A resposta da API deve conter as duas consultas.
+    assert len(response_data["queries"]) == 2
+
+    # A análise deve ter sido persistida.
+    assert history.count_analyses() == 1
+
+    saved_analysis = history.get_analysis(analysis_id)
+
+    assert saved_analysis is not None
+    assert saved_analysis["status"] == "success"
+
+    # O SQLite deve preservar todas as consultas.
+    assert saved_analysis["queries"] == expected_queries
+
+    # O endpoint de detalhes deve recuperar os mesmos dados.
+    detail_response = client.get(f"/analyses/history/{analysis_id}")
+
+    assert detail_response.status_code == 200
+
+    detail_data = detail_response.json()
+
+    assert detail_data["analysis_id"] == analysis_id
+    assert detail_data["status"] == "success"
+    assert detail_data["queries"] == expected_queries
+
+    assert len(detail_data["queries"]) == 2
+
+    # Cada consulta precisa manter seu SQL independente.
+    assert detail_data["queries"][0]["sql"] != detail_data["queries"][1]["sql"]
+
+    assert all(query["status"] == "success" for query in detail_data["queries"])

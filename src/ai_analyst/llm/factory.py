@@ -1,16 +1,14 @@
-
 """
 Factory responsável pela criação dos provedores de IA.
 """
 
 import os
 
+from ai_analyst.llm.anthropic import AnthropicClient
 from ai_analyst.llm.base import LLMProvider
 from ai_analyst.llm.gemini import GeminiClient
 from ai_analyst.llm.openai import OpenAIClient
-from ai_analyst.llm.anthropic import AnthropicClient
 from ai_analyst.llm.resilience import RetryLLMProvider
-
 
 AVAILABLE_PROVIDERS = (
     "gemini",
