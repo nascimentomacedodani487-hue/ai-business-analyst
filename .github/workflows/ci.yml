@@ -1,3 +1,4 @@
+
 name: CI
 
 on:
@@ -79,7 +80,6 @@ jobs:
               "orders": 60_000,
           }
 
-          # Ensure the database directory exists.
           DATABASE_PATH.parent.mkdir(
               parents=True,
               exist_ok=True,
@@ -91,14 +91,13 @@ jobs:
               n_orders=60_000,
           )
 
-          # Validate the generated table collection.
           if set(tables) != set(EXPECTED_COUNTS):
               raise RuntimeError(
                   "Unexpected database tables: "
                   f"{sorted(tables)}"
               )
 
-          # Persist DataFrames into DuckDB.
+          # Persist generated DataFrames into DuckDB.
           with duckdb.connect(
               str(DATABASE_PATH)
           ) as connection:
@@ -115,25 +114,37 @@ jobs:
                           f"actual={generated_count}"
                       )
 
+                  # Register the generated DataFrame.
                   connection.register(
                       "_generated_dataframe",
                       dataframe,
                   )
 
+                  # Create the persistent DuckDB table.
+                  # Consume the complete result before continuing.
                   connection.execute(
                       f'''
                       CREATE OR REPLACE TABLE "{table_name}"
                       AS SELECT * FROM _generated_dataframe
                       '''
-                  )
+                  ).fetchall()
 
                   connection.unregister(
                       "_generated_dataframe"
                   )
 
-                  actual_count = connection.execute(
+                  # Validate the persisted table.
+                  # fetchall() ensures no unfinished result remains.
+                  count_rows = connection.execute(
                       f'SELECT COUNT(*) FROM "{table_name}"'
-                  ).fetchone()[0]
+                  ).fetchall()
+
+                  if len(count_rows) != 1:
+                      raise RuntimeError(
+                          f"Unexpected count result for {table_name}."
+                      )
+
+                  actual_count = count_rows[0][0]
 
                   if actual_count != expected_count:
                       raise RuntimeError(
@@ -185,7 +196,6 @@ jobs:
       - name: Run Python test suite
         run: |
           python -m pytest -q
-
 
   # ========================================================
   # FRONTEND NEXT.JS
