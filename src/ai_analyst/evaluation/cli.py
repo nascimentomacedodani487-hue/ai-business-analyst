@@ -5,6 +5,8 @@ Modos disponíveis:
 - Validação dos SQLs de referência sem chamadas de IA.
 - Execução individual com autorização explícita para utilizar LLMs.
 - Benchmark comparativo entre múltiplos provedores.
+- Consulta do histórico de benchmarks.
+- Comparação histórica entre duas execuções.
 """
 
 from __future__ import annotations
@@ -22,7 +24,9 @@ from typing import Any, Sequence
 from uuid import uuid4
 
 from ai_analyst.agent.sql_executor import SQLExecutor
+from ai_analyst.evaluation.comparison import BenchmarkComparator
 from ai_analyst.evaluation.dataset import load_evaluation_dataset
+from ai_analyst.evaluation.history import BenchmarkHistory
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +45,34 @@ EXIT_ERROR = 2
 # ==========================================================
 # ARGUMENTOS
 # ==========================================================
+
+
+def positive_int(value: str) -> int:
+    """Valida um inteiro estritamente positivo."""
+
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("O valor deve ser um número inteiro.") from exc
+
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("O valor deve ser maior que zero.")
+
+    return parsed
+
+
+def non_negative_int(value: str) -> int:
+    """Valida um inteiro maior ou igual a zero."""
+
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("O valor deve ser um número inteiro.") from exc
+
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("O valor não pode ser negativo.")
+
+    return parsed
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -62,7 +94,13 @@ def build_parser() -> argparse.ArgumentParser:
             "  ai-evaluation --provider openai --allow-llm "
             "--output reports/openai.json\n"
             "  ai-evaluation --benchmark gemini openai anthropic "
-            "--allow-llm --output reports/benchmark.json"
+            "--allow-llm --output reports/benchmark.json\n"
+            "  ai-evaluation --list-benchmarks\n"
+            "  ai-evaluation --list-benchmarks "
+            "--filter-provider gemini --limit 10\n"
+            "  ai-evaluation --show-benchmark benchmark-id\n"
+            "  ai-evaluation --compare-benchmarks "
+            "baseline-id candidate-id"
         ),
     )
 
@@ -92,6 +130,37 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Executa um benchmark comparativo entre pelo menos "
             "dois provedores. Exemplo: --benchmark gemini openai anthropic."
+        ),
+    )
+
+    mode_group.add_argument(
+        "--list-benchmarks",
+        action="store_true",
+        help=(
+            "Lista os benchmarks armazenados no histórico SQLite "
+            "sem executar provedores de IA."
+        ),
+    )
+
+    mode_group.add_argument(
+        "--show-benchmark",
+        type=str,
+        default=None,
+        metavar="BENCHMARK_ID",
+        help=(
+            "Exibe o relatório completo de um benchmark armazenado "
+            "pelo identificador informado."
+        ),
+    )
+
+    mode_group.add_argument(
+        "--compare-benchmarks",
+        nargs=2,
+        default=None,
+        metavar=("BASELINE_ID", "CANDIDATE_ID"),
+        help=(
+            "Compara dois benchmarks históricos pelo identificador, "
+            "detectando regressões e melhorias sem executar LLMs."
         ),
     )
 
@@ -129,7 +198,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         metavar="PATH",
-        help="Caminho do arquivo JSON que receberá o relatório.",
+        help="Caminho do arquivo JSON que receberá o relatório ou resultado.",
     )
 
     parser.add_argument(
@@ -139,6 +208,44 @@ def build_parser() -> argparse.ArgumentParser:
             "Autoriza explicitamente chamadas reais aos provedores "
             "de IA. Obrigatório para avaliações completas e benchmarks."
         ),
+    )
+
+    # ------------------------------------------------------
+    # Consulta do histórico de benchmarks
+    # ------------------------------------------------------
+
+    parser.add_argument(
+        "--filter-provider",
+        choices=SUPPORTED_PROVIDERS,
+        default=None,
+        metavar="PROVIDER",
+        help=("Filtra o histórico pelo provedor. Utilizado com --list-benchmarks."),
+    )
+
+    parser.add_argument(
+        "--filter-model",
+        type=str,
+        default=None,
+        metavar="MODEL",
+        help=(
+            "Filtra o histórico pelo modelo utilizado. Utilizado com --list-benchmarks."
+        ),
+    )
+
+    parser.add_argument(
+        "--limit",
+        type=positive_int,
+        default=20,
+        metavar="N",
+        help="Quantidade máxima de registros exibidos na listagem do histórico.",
+    )
+
+    parser.add_argument(
+        "--offset",
+        type=non_negative_int,
+        default=0,
+        metavar="N",
+        help="Quantidade de registros ignorados antes da listagem do histórico.",
     )
 
     parser.add_argument(
@@ -161,7 +268,7 @@ def configure_logging(level: str) -> None:
 
     logging.basicConfig(
         level=getattr(logging, level),
-        format=("%(asctime)s | %(levelname)s | %(name)s | %(message)s"),
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
         stream=sys.stderr,
         force=True,
@@ -310,6 +417,534 @@ def write_json_report(
             temporary_path.unlink()
 
     return output_path
+
+
+# ==========================================================
+# CONSULTA DO HISTÓRICO DE BENCHMARKS
+# ==========================================================
+
+
+def _format_history_list(values: Any) -> str:
+    """Formata listas ou mapeamentos de valores para exibição."""
+
+    if isinstance(values, Mapping):
+        normalized = [
+            str(value)
+            for value in values.values()
+            if value is not None and str(value).strip()
+        ]
+
+    elif isinstance(values, (list, tuple, set)):
+        normalized = [
+            str(value) for value in values if value is not None and str(value).strip()
+        ]
+
+    else:
+        return "N/D"
+
+    return ", ".join(normalized) if normalized else "N/D"
+
+
+def print_benchmark_history(
+    entries: list[dict[str, Any]],
+    total: int,
+    limit: int,
+    offset: int,
+    provider: str | None = None,
+    model: str | None = None,
+) -> None:
+    """Exibe os registros resumidos do histórico de benchmarks."""
+
+    print()
+    print("AI BUSINESS ANALYST — HISTÓRICO DE BENCHMARKS")
+    print("=" * 88)
+
+    if provider:
+        print(f"Filtro de provedor: {provider}")
+
+    if model:
+        print(f"Filtro de modelo: {model}")
+
+    print(f"Registros encontrados: {total}")
+
+    print(f"Registros exibidos: {len(entries)}")
+
+    print(f"Paginação: offset={offset}, limit={limit}")
+
+    if not entries:
+        print()
+        print("Nenhum benchmark encontrado no histórico.")
+        print()
+
+        return
+
+    print()
+    print("-" * 88)
+
+    for index, entry in enumerate(entries, start=offset + 1):
+        dataset = entry.get("dataset", {})
+        summary = entry.get("summary", {})
+
+        if not isinstance(dataset, Mapping):
+            dataset = {}
+
+        if not isinstance(summary, Mapping):
+            summary = {}
+
+        benchmark_id = entry.get(
+            "benchmark_id",
+            "N/D",
+        )
+
+        created_at = entry.get(
+            "created_at",
+            "N/D",
+        )
+
+        dataset_case_count = dataset.get(
+            "case_count",
+            entry.get("dataset_case_count", entry.get("case_count", "N/D")),
+        )
+
+        dataset_sha256 = dataset.get(
+            "sha256",
+            entry.get("dataset_sha256", entry.get("sha256", "N/D")),
+        )
+
+        providers = _format_history_list(
+            entry.get("providers"),
+        )
+
+        models = _format_history_list(
+            entry.get("models"),
+        )
+
+        provider_count = summary.get(
+            "provider_count",
+            entry.get("provider_count", "N/D"),
+        )
+
+        completed_providers = summary.get(
+            "completed_providers",
+            entry.get("completed_providers", "N/D"),
+        )
+
+        failed_providers = summary.get(
+            "failed_providers",
+            entry.get("failed_providers", "N/D"),
+        )
+
+        print(f"{index:03d}. {benchmark_id}")
+
+        print(f"     Criado em: {created_at}")
+
+        print(f"     Cenários: {dataset_case_count}")
+
+        print(f"     Provedores: {providers}")
+
+        print(f"     Modelos: {models}")
+
+        print(
+            f"     Execuções: {completed_providers} concluídas / "
+            f"{failed_providers} com falha "
+            f"(total de provedores: {provider_count})"
+        )
+
+        print(f"     Dataset SHA-256: {dataset_sha256}")
+
+        print("-" * 88)
+
+    print()
+
+
+def list_benchmark_history(
+    history_store: BenchmarkHistory,
+    limit: int,
+    offset: int,
+    provider: str | None = None,
+    model: str | None = None,
+) -> dict[str, Any]:
+    """Recupera uma página do histórico e suas informações de paginação."""
+
+    result = history_store.list_benchmarks(
+        limit=limit,
+        offset=offset,
+        provider=provider,
+        model=model,
+    )
+
+    if isinstance(result, Mapping):
+        entries = result.get("items")
+
+        pagination = result.get("pagination")
+
+        if not isinstance(entries, list):
+            raise ValueError("O histórico retornou um campo 'items' inválido.")
+
+        if not isinstance(pagination, Mapping):
+            raise ValueError("O histórico retornou um campo 'pagination' inválido.")
+
+        total = pagination.get("total")
+        stored_limit = pagination.get("limit")
+        stored_offset = pagination.get("offset")
+        has_more = pagination.get("has_more")
+
+        if not isinstance(total, int) or isinstance(total, bool) or total < 0:
+            raise ValueError("O total de registros do histórico é inválido.")
+
+        if (
+            not isinstance(stored_limit, int)
+            or isinstance(stored_limit, bool)
+            or stored_limit <= 0
+        ):
+            raise ValueError(
+                "O limite de paginação retornado pelo histórico é inválido."
+            )
+
+        if (
+            not isinstance(stored_offset, int)
+            or isinstance(stored_offset, bool)
+            or stored_offset < 0
+        ):
+            raise ValueError(
+                "O offset de paginação retornado pelo histórico é inválido."
+            )
+
+        if not isinstance(has_more, bool):
+            raise ValueError(
+                "O indicador has_more retornado pelo histórico é inválido."
+            )
+
+        normalized_pagination = {
+            "total": total,
+            "limit": stored_limit,
+            "offset": stored_offset,
+            "has_more": has_more,
+        }
+
+    elif isinstance(result, list):
+        entries = result
+
+        total = history_store.count_benchmarks(
+            provider=provider,
+            model=model,
+        )
+
+        normalized_pagination = {
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(entries) < total,
+        }
+
+    else:
+        raise ValueError("O histórico retornou um formato de listagem não suportado.")
+
+    if not all(isinstance(entry, Mapping) for entry in entries):
+        raise ValueError("O histórico retornou registros em formato inválido.")
+
+    return {
+        "items": entries,
+        "pagination": normalized_pagination,
+        "filters": {
+            "provider": provider,
+            "model": model,
+        },
+    }
+
+
+def show_benchmark_history(
+    history_store: BenchmarkHistory,
+    benchmark_id: str,
+) -> dict[str, Any] | None:
+    """Recupera o relatório completo de um benchmark pelo identificador."""
+
+    return history_store.get_benchmark(benchmark_id)
+
+
+# ==========================================================
+# COMPARAÇÃO HISTÓRICA DE BENCHMARKS
+# ==========================================================
+
+
+def execute_benchmark_comparison(
+    history_store: BenchmarkHistory,
+    baseline_id: str,
+    candidate_id: str,
+) -> dict[str, Any]:
+    """Recupera e compara dois benchmarks históricos.
+
+    Não executa provedores de IA. Utiliza exclusivamente os relatórios
+    já persistidos no histórico SQLite.
+
+    Raises:
+        ValueError: quando algum benchmark não existe.
+    """
+
+    if not isinstance(baseline_id, str) or not baseline_id.strip():
+        raise ValueError("O identificador do benchmark baseline é inválido.")
+
+    if not isinstance(candidate_id, str) or not candidate_id.strip():
+        raise ValueError("O identificador do benchmark candidate é inválido.")
+
+    if baseline_id == candidate_id:
+        raise ValueError(
+            "Os identificadores baseline e candidate devem ser diferentes."
+        )
+
+    baseline = history_store.get_benchmark(baseline_id)
+
+    if baseline is None:
+        raise ValueError(f"Benchmark baseline não encontrado: {baseline_id}")
+
+    candidate = history_store.get_benchmark(candidate_id)
+
+    if candidate is None:
+        raise ValueError(f"Benchmark candidate não encontrado: {candidate_id}")
+
+    comparator = BenchmarkComparator()
+
+    return comparator.compare(
+        baseline=baseline,
+        candidate=candidate,
+    )
+
+
+def benchmark_comparison_exit_code(
+    payload: Any,
+) -> int:
+    """Determina o código de saída de uma comparação histórica.
+
+    Comparações estáveis ou com melhoria retornam sucesso.
+    Regressões, resultados mistos e incompatibilidades retornam falha.
+    """
+
+    if not isinstance(payload, Mapping):
+        return EXIT_FAILURE
+
+    summary = payload.get("summary")
+
+    if not isinstance(summary, Mapping):
+        return EXIT_FAILURE
+
+    status = summary.get("status")
+
+    if status in {"stable", "improvement"}:
+        return EXIT_SUCCESS
+
+    return EXIT_FAILURE
+
+
+def _format_comparison_value(
+    value: Any,
+    metric_name: str,
+) -> str:
+    """Formata um valor de métrica para o relatório."""
+
+    if value is None:
+        return "N/D"
+
+    if isinstance(value, bool):
+        return str(value)
+
+    if not isinstance(value, (int, float)):
+        return str(value)
+
+    if metric_name in {
+        "pass_rate",
+        "row_accuracy",
+        "cell_accuracy",
+    }:
+        return f"{value:.2f}%"
+
+    if metric_name == "average_score":
+        return f"{value:.4f}"
+
+    if isinstance(value, int):
+        return str(value)
+
+    return f"{value:.2f}"
+
+
+def _comparison_metric_label(metric_name: str) -> str:
+    """Converte identificadores técnicos em nomes legíveis."""
+
+    labels = {
+        "pass_rate": "Taxa de aprovação",
+        "average_score": "Score médio",
+        "average_duration_ms": "Latência média por análise",
+        "row_accuracy": "Row accuracy",
+        "cell_accuracy": "Cell accuracy",
+        "error_cases": "Cenários com erro",
+        "failed_cases": "Cenários reprovados",
+        "skipped_cases": "Cenários ignorados",
+        "llm_usage.tokens.input": "Tokens de entrada",
+        "llm_usage.tokens.output": "Tokens de saída",
+        "llm_usage.tokens.thinking": "Tokens de raciocínio",
+        "llm_usage.tokens.total": "Total de tokens",
+        "llm_usage.tokens.unreported": "Tokens não reportados",
+        "llm_usage.requests.failed": "Requisições com falha",
+        "llm_usage.requests.retries": "Tentativas adicionais",
+        "llm_usage.latency.average_request_ms": "Latência média por requisição",
+    }
+
+    return labels.get(metric_name, metric_name)
+
+
+def print_benchmark_comparison_report(
+    payload: dict[str, Any],
+) -> None:
+    """Exibe o resultado comparativo de dois benchmarks."""
+
+    baseline = payload.get("baseline", {})
+    candidate = payload.get("candidate", {})
+    compatibility = payload.get("compatibility", {})
+    summary = payload.get("summary", {})
+    providers = payload.get("providers", {})
+
+    if not isinstance(baseline, Mapping):
+        baseline = {}
+
+    if not isinstance(candidate, Mapping):
+        candidate = {}
+
+    if not isinstance(compatibility, Mapping):
+        compatibility = {}
+
+    if not isinstance(summary, Mapping):
+        summary = {}
+
+    if not isinstance(providers, Mapping):
+        providers = {}
+
+    print()
+    print("AI BUSINESS ANALYST — BENCHMARK COMPARISON")
+    print("=" * 88)
+
+    print(f"Baseline: {baseline.get('benchmark_id', 'N/D')}")
+
+    print(f"Candidate: {candidate.get('benchmark_id', 'N/D')}")
+
+    print(f"Dataset SHA-256: {baseline.get('dataset_sha256', 'N/D')}")
+
+    print(f"Cenários: {baseline.get('dataset_case_count', 'N/D')}")
+
+    print()
+
+    status = str(summary.get("status", "not_comparable")).upper()
+
+    print(f"RESULTADO GERAL: {status}")
+
+    print(
+        f"Provedores comparados: "
+        f"{summary.get('providers_compared', 0)}"
+        f"/{summary.get('providers_total', 0)}"
+    )
+
+    print(f"Regressões: {summary.get('regressions', 0)}")
+
+    print(f"Melhorias: {summary.get('improvements', 0)}")
+
+    print(f"Métricas estáveis: {summary.get('stable_metrics', 0)}")
+
+    print(f"Métricas não comparáveis: {summary.get('not_comparable_metrics', 0)}")
+
+    if not compatibility.get("comparable", False):
+        print()
+        print("COMPATIBILIDADE: INCOMPATIBLE")
+
+        reasons = compatibility.get("reasons", [])
+
+        if isinstance(reasons, list):
+            for reason in reasons:
+                print(f"  - {reason}")
+
+        print()
+        return
+
+    print()
+    print("-" * 88)
+    print("COMPARAÇÃO POR PROVEDOR")
+    print("-" * 88)
+
+    for provider, provider_result in providers.items():
+        if not isinstance(provider_result, Mapping):
+            continue
+
+        print()
+        print(f"PROVEDOR: {provider.upper()}")
+
+        provider_status = str(provider_result.get("status", "not_comparable")).upper()
+
+        print(f"  Status: {provider_status}")
+
+        print(f"  Modelo baseline: {provider_result.get('baseline_model') or 'N/D'}")
+
+        print(f"  Modelo candidate: {provider_result.get('candidate_model') or 'N/D'}")
+
+        execution = provider_result.get("execution")
+
+        if isinstance(execution, Mapping):
+            print(
+                f"  Execução: "
+                f"{execution.get('baseline', 'N/D')} -> "
+                f"{execution.get('candidate', 'N/D')}"
+            )
+
+        metrics = provider_result.get("metrics", {})
+
+        if not isinstance(metrics, Mapping) or not metrics:
+            if provider_status not in {
+                "baseline_only",
+                "candidate_only",
+                "model_changed",
+                "model_unknown",
+                "not_comparable",
+            }:
+                print("  Nenhuma métrica disponível para comparação.")
+
+            continue
+
+        for metric_name, metric in metrics.items():
+            if not isinstance(metric, Mapping):
+                continue
+
+            metric_status = metric.get("status", "not_comparable")
+
+            baseline_value = _format_comparison_value(
+                metric.get("baseline"),
+                metric_name,
+            )
+
+            candidate_value = _format_comparison_value(
+                metric.get("candidate"),
+                metric_name,
+            )
+
+            delta = metric.get("delta")
+
+            delta_pct = metric.get("delta_pct")
+
+            if delta is None:
+                difference_text = "variação: N/D"
+
+            elif delta_pct is None:
+                difference_text = f"variação: {delta}"
+
+            else:
+                difference_text = f"variação: {delta} ({delta_pct:+.2f}%)"
+
+            print(
+                f"  {_comparison_metric_label(metric_name)}: "
+                f"{baseline_value} -> {candidate_value} | "
+                f"{difference_text} | "
+                f"{str(metric_status).upper()}"
+            )
+
+    print()
+    print("=" * 88)
+    print("Comparação concluída. Nenhum provedor de IA foi executado.")
+    print()
 
 
 # ==========================================================
@@ -590,19 +1225,30 @@ def execute_benchmark(
     cases: list,
     providers: Sequence[str],
     dataset_path: Path | None = None,
+    history_store: BenchmarkHistory | None = None,
 ) -> dict[str, Any]:
-    """Executa o BenchmarkRunner com os provedores selecionados."""
+    """Executa o BenchmarkRunner com persistência histórica."""
 
     from ai_analyst.evaluation.benchmark import BenchmarkRunner
+
+    effective_history_store = (
+        history_store if history_store is not None else BenchmarkHistory()
+    )
 
     benchmark = BenchmarkRunner(
         providers=providers,
         dataset_path=dataset_path,
+        history_store=effective_history_store,
     )
 
     return benchmark.run(
         cases=cases,
     )
+
+
+# ==========================================================
+# FORMATAÇÃO DO BENCHMARK
+# ==========================================================
 
 
 def _format_percentage(
@@ -833,21 +1479,7 @@ def validation_exit_code(
 def benchmark_exit_code(
     payload: dict[str, Any],
 ) -> int:
-    """Valida a integridade e o resultado completo do benchmark.
-
-    Retorna EXIT_FAILURE quando:
-    - Existe falha de execução em algum provedor.
-    - A configuração de provedores está inconsistente.
-    - O dataset não possui uma lista válida de cenários.
-    - A comparação não contém exatamente todos os cenários.
-    - Um relatório individual não contém todos os cenários.
-    - Um cenário não contém resultados de todos os provedores.
-    - Existem resultados duplicados ou excedentes.
-    - Algum cenário não foi aprovado.
-
-    Retorna EXIT_SUCCESS somente quando a cobertura está completa
-    e todos os cenários foram aprovados em todos os provedores.
-    """
+    """Valida a integridade e o resultado completo do benchmark."""
 
     if not isinstance(payload, Mapping):
         return EXIT_FAILURE
@@ -874,10 +1506,6 @@ def benchmark_exit_code(
     ):
         return EXIT_FAILURE
 
-    # ------------------------------------------------------
-    # 1. Validar os cenários esperados.
-    # ------------------------------------------------------
-
     expected_case_ids = dataset.get("case_ids")
 
     expected_case_count = dataset.get("case_count")
@@ -903,10 +1531,6 @@ def benchmark_exit_code(
         or expected_case_count != len(expected_case_ids)
     ):
         return EXIT_FAILURE
-
-    # ------------------------------------------------------
-    # 2. Validar os provedores esperados.
-    # ------------------------------------------------------
 
     expected_providers = configuration.get("providers")
 
@@ -945,10 +1569,6 @@ def benchmark_exit_code(
 
     if benchmark_summary.get("completed_providers") != len(expected_providers):
         return EXIT_FAILURE
-
-    # ------------------------------------------------------
-    # 3. Validar os relatórios individuais.
-    # ------------------------------------------------------
 
     for provider, execution in provider_runs.items():
         if not isinstance(execution, Mapping):
@@ -1007,10 +1627,6 @@ def benchmark_exit_code(
         if set(report_case_ids) != expected_case_set:
             return EXIT_FAILURE
 
-    # ------------------------------------------------------
-    # 4. Validar a comparação por provedor.
-    # ------------------------------------------------------
-
     provider_comparison = comparison.get("by_provider")
 
     if not isinstance(provider_comparison, Mapping):
@@ -1032,10 +1648,6 @@ def benchmark_exit_code(
         ):
             return EXIT_FAILURE
 
-    # ------------------------------------------------------
-    # 5. Validar cobertura exata da comparação por cenário.
-    # ------------------------------------------------------
-
     case_comparison = comparison.get("by_case")
 
     if not isinstance(case_comparison, Mapping):
@@ -1053,8 +1665,6 @@ def benchmark_exit_code(
         if not isinstance(provider_results, Mapping):
             return EXIT_FAILURE
 
-        # Cada cenário precisa possuir exatamente um resultado
-        # por provedor esperado.
         if set(provider_results) != expected_provider_set:
             return EXIT_FAILURE
 
@@ -1094,28 +1704,42 @@ def main(
     configure_logging(args.log_level)
 
     # ------------------------------------------------------
-    # 1. Validar a autorização de chamadas de IA.
+    # 1. Identificar os modos sem chamadas de IA.
     # ------------------------------------------------------
 
-    if args.allow_llm and (args.list_cases or args.validate_only):
+    is_comparison_mode = args.compare_benchmarks is not None
+
+    is_history_mode = (
+        args.list_benchmarks or args.show_benchmark is not None or is_comparison_mode
+    )
+
+    is_non_llm_mode = args.list_cases or args.validate_only or is_history_mode
+
+    # ------------------------------------------------------
+    # 2. Validar autorização explícita de chamadas de IA.
+    # ------------------------------------------------------
+
+    if args.allow_llm and is_non_llm_mode:
         parser.error(
-            "--allow-llm não deve ser usado com --list-cases ou --validate-only."
+            "--allow-llm não deve ser utilizado com modos "
+            "que não executam provedores de IA."
         )
 
-    if not (args.list_cases or args.validate_only) and not args.allow_llm:
+    if not is_non_llm_mode and not args.allow_llm:
         parser.error(
             "A execução completa pode consumir quotas e custos "
             "de provedores externos. Para autorizar chamadas reais, "
             "informe explicitamente --allow-llm. "
-            "Utilize --list-cases ou --validate-only para operações "
-            "sem chamadas de IA."
+            "Utilize --list-cases, --validate-only, "
+            "--list-benchmarks, --show-benchmark ou "
+            "--compare-benchmarks para operações sem chamadas de IA."
         )
 
     if args.list_cases and args.output:
         parser.error("--output não é utilizado com --list-cases.")
 
     # ------------------------------------------------------
-    # 2. Validar configuração do benchmark.
+    # 3. Validar configuração do benchmark.
     # ------------------------------------------------------
 
     if args.benchmark is not None:
@@ -1126,7 +1750,195 @@ def main(
             parser.error("--benchmark não aceita provedores duplicados.")
 
     # ------------------------------------------------------
-    # 3. Carregar e filtrar cenários.
+    # 4. Consultar o histórico de benchmarks.
+    #
+    # Estas operações são independentes do dataset.
+    # ------------------------------------------------------
+
+    if is_history_mode:
+        try:
+            history_store = BenchmarkHistory()
+
+        except Exception as exc:
+            logger.exception("Falha ao inicializar o histórico de benchmarks")
+
+            print(
+                f"Erro ao inicializar o histórico: {exc}",
+                file=sys.stderr,
+            )
+
+            return EXIT_ERROR
+
+        # --------------------------------------------------
+        # 4.1. Comparação entre duas execuções históricas.
+        # --------------------------------------------------
+
+        if is_comparison_mode:
+            baseline_id, candidate_id = args.compare_benchmarks
+
+            try:
+                payload = execute_benchmark_comparison(
+                    history_store=history_store,
+                    baseline_id=baseline_id,
+                    candidate_id=candidate_id,
+                )
+
+            except ValueError as exc:
+                logger.warning(
+                    "Não foi possível comparar os benchmarks: %s",
+                    exc,
+                )
+
+                print(
+                    f"Erro na comparação: {exc}",
+                    file=sys.stderr,
+                )
+
+                return EXIT_FAILURE
+
+            except Exception as exc:
+                logger.exception("Falha inesperada na comparação de benchmarks")
+
+                print(
+                    f"Erro durante a comparação: {exc}",
+                    file=sys.stderr,
+                )
+
+                return EXIT_ERROR
+
+            print_benchmark_comparison_report(payload)
+
+            if args.output:
+                try:
+                    saved_path = write_json_report(
+                        args.output,
+                        payload,
+                    )
+
+                    print(f"Relatório de comparação salvo em: {saved_path.resolve()}")
+
+                except Exception as exc:
+                    logger.exception("Falha ao salvar relatório de comparação")
+
+                    print(
+                        f"Erro ao salvar relatório de comparação: {exc}",
+                        file=sys.stderr,
+                    )
+
+                    return EXIT_ERROR
+
+            return benchmark_comparison_exit_code(payload)
+
+        # --------------------------------------------------
+        # 4.2. Listagem paginada do histórico.
+        # --------------------------------------------------
+
+        if args.list_benchmarks:
+            try:
+                history_payload = list_benchmark_history(
+                    history_store=history_store,
+                    limit=args.limit,
+                    offset=args.offset,
+                    provider=args.filter_provider,
+                    model=args.filter_model,
+                )
+
+            except Exception as exc:
+                logger.exception("Falha ao consultar o histórico de benchmarks")
+
+                print(
+                    f"Erro ao consultar o histórico: {exc}",
+                    file=sys.stderr,
+                )
+
+                return EXIT_ERROR
+
+            pagination = history_payload["pagination"]
+
+            print_benchmark_history(
+                entries=history_payload["items"],
+                total=pagination["total"],
+                limit=pagination["limit"],
+                offset=pagination["offset"],
+                provider=args.filter_provider,
+                model=args.filter_model,
+            )
+
+            if args.output:
+                try:
+                    saved_path = write_json_report(
+                        args.output,
+                        history_payload,
+                    )
+
+                    print(f"Histórico exportado em: {saved_path.resolve()}")
+
+                except Exception as exc:
+                    logger.exception("Falha ao exportar o histórico")
+
+                    print(
+                        f"Erro ao exportar o histórico: {exc}",
+                        file=sys.stderr,
+                    )
+
+                    return EXIT_ERROR
+
+            return EXIT_SUCCESS
+
+        # --------------------------------------------------
+        # 4.3. Recuperação do relatório completo pelo ID.
+        # --------------------------------------------------
+
+        if args.show_benchmark is not None:
+            try:
+                payload = show_benchmark_history(
+                    history_store=history_store,
+                    benchmark_id=args.show_benchmark,
+                )
+
+            except Exception as exc:
+                logger.exception("Falha ao recuperar o benchmark do histórico")
+
+                print(
+                    f"Erro ao recuperar o benchmark: {exc}",
+                    file=sys.stderr,
+                )
+
+                return EXIT_ERROR
+
+            if payload is None:
+                print(
+                    f"Benchmark não encontrado: {args.show_benchmark}",
+                    file=sys.stderr,
+                )
+
+                return EXIT_FAILURE
+
+            print_benchmark_report(payload)
+
+            if args.output:
+                try:
+                    saved_path = write_json_report(
+                        args.output,
+                        payload,
+                    )
+
+                    print(f"Relatório histórico exportado em: {saved_path.resolve()}")
+
+                except Exception as exc:
+                    logger.exception("Falha ao exportar o relatório histórico")
+
+                    print(
+                        f"Erro ao exportar o relatório: {exc}",
+                        file=sys.stderr,
+                    )
+
+                    return EXIT_ERROR
+
+            return EXIT_SUCCESS
+
+    # ------------------------------------------------------
+    # 5. Carregar e filtrar cenários.
     # ------------------------------------------------------
 
     try:
@@ -1148,7 +1960,7 @@ def main(
         return EXIT_ERROR
 
     # ------------------------------------------------------
-    # 4. Listagem sem execução.
+    # 6. Listagem sem execução.
     # ------------------------------------------------------
 
     if args.list_cases:
@@ -1156,7 +1968,7 @@ def main(
         return EXIT_SUCCESS
 
     # ------------------------------------------------------
-    # 5. Validação de SQL sem IA.
+    # 7. Validação de SQL sem IA.
     # ------------------------------------------------------
 
     if args.validate_only:
@@ -1184,7 +1996,7 @@ def main(
         return validation_exit_code(payload)
 
     # ------------------------------------------------------
-    # 6. Benchmark comparativo com autorização explícita.
+    # 8. Benchmark comparativo com autorização explícita.
     # ------------------------------------------------------
 
     if args.benchmark is not None:
@@ -1229,7 +2041,7 @@ def main(
         return benchmark_exit_code(payload)
 
     # ------------------------------------------------------
-    # 7. Execução individual com autorização explícita.
+    # 9. Execução individual com autorização explícita.
     # ------------------------------------------------------
 
     try:
@@ -1252,7 +2064,7 @@ def main(
     print_evaluation_report(payload)
 
     # ------------------------------------------------------
-    # 8. Exportação JSON.
+    # 10. Exportação JSON.
     # ------------------------------------------------------
 
     if args.output:
@@ -1275,7 +2087,7 @@ def main(
             return EXIT_ERROR
 
     # ------------------------------------------------------
-    # 9. Código de saída.
+    # 11. Código de saída.
     # ------------------------------------------------------
 
     return evaluation_exit_code(payload)

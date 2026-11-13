@@ -19,6 +19,7 @@ from ai_analyst.evaluation.models import (
     EvaluationCaseResult,
     EvaluationRunReport,
 )
+from ai_analyst.llm.metrics import llm_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,9 @@ class EvaluationRunner:
 
     O runner aceita dependências injetáveis para permitir testes
     sem chamadas reais aos provedores de IA.
+
+    Cada cenário possui um contexto independente de métricas LLM,
+    permitindo rastrear requisições, tokens, retries e latência.
     """
 
     def __init__(
@@ -89,6 +93,69 @@ class EvaluationRunner:
         """Cria uma nova instância do agente."""
 
         return self.analyst_factory(provider_name=self.provider_name)
+
+    # ==========================================================
+    # MÉTRICAS INDIVIDUAIS DE LLM
+    # ==========================================================
+
+    @staticmethod
+    def _snapshot_llm_metrics(
+        analysis_metrics: Any,
+        *,
+        provider: str,
+        model: str | None = None,
+        analysis_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Obtém um snapshot das métricas de LLM do cenário.
+
+        Utiliza o contexto individual criado por LLMMetrics.track_analysis().
+
+        O provedor vem da configuração efetiva do runner, evitando
+        que o valor padrão do acumulador seja confundido com o
+        provedor realmente selecionado.
+
+        Quando não existem chamadas registradas:
+        - O modelo é obtido do BusinessAnalyst.
+        - Se o modelo não estiver disponível, utiliza 'unknown'.
+
+        Quando existe um analysis_id retornado pelo agente,
+        ele substitui o identificador temporário de rastreamento.
+        """
+
+        snapshot = analysis_metrics.snapshot()
+
+        if not isinstance(snapshot, Mapping):
+            raise TypeError(
+                "O snapshot de métricas LLM deve ser um objeto de mapeamento."
+            )
+
+        normalized_snapshot = dict(snapshot)
+
+        requests = normalized_snapshot.get("requests", {})
+
+        if not isinstance(requests, Mapping):
+            requests = {}
+
+        requests_total = requests.get("total", 0)
+
+        has_recorded_requests = (
+            isinstance(requests_total, int)
+            and not isinstance(requests_total, bool)
+            and requests_total > 0
+        )
+
+        normalized_snapshot["provider"] = provider
+
+        if not has_recorded_requests:
+            normalized_snapshot["model"] = model or "unknown"
+
+        elif not normalized_snapshot.get("model"):
+            normalized_snapshot["model"] = model or "unknown"
+
+        if analysis_id:
+            normalized_snapshot["analysis_id"] = analysis_id
+
+        return normalized_snapshot
 
     # ==========================================================
     # NORMALIZAÇÃO DOS RESULTADOS
@@ -479,6 +546,9 @@ class EvaluationRunner:
 
         # ------------------------------------------------------
         # 1. Calcular o resultado de referência.
+        #
+        # A consulta de referência não pertence ao contexto
+        # de métricas LLM e não deve contabilizar consumo de IA.
         # ------------------------------------------------------
 
         reference_start = perf_counter()
@@ -521,23 +591,39 @@ class EvaluationRunner:
 
         # ------------------------------------------------------
         # 2. Executar a pergunta no agente.
+        #
+        # Cada cenário recebe um contexto independente.
+        # Isso impede que tokens e latências de cenários
+        # anteriores sejam incorporados ao cenário atual.
         # ------------------------------------------------------
+
+        analysis_tracking_id = str(uuid4())
+
+        analysis_metrics = None
 
         analysis_start = perf_counter()
 
         try:
-            analysis = analyst.analyze(case.question)
-
-            analysis_duration_ms = round(
-                (perf_counter() - analysis_start) * 1000,
-                2,
-            )
+            with llm_metrics.track_analysis(
+                analysis_id=analysis_tracking_id,
+            ) as analysis_metrics:
+                analysis = analyst.analyze(case.question)
 
         except Exception as exc:
             analysis_duration_ms = round(
                 (perf_counter() - analysis_start) * 1000,
                 2,
             )
+
+            llm_usage = None
+
+            if analysis_metrics is not None:
+                llm_usage = self._snapshot_llm_metrics(
+                    analysis_metrics,
+                    provider=self.provider_name,
+                    model=getattr(analyst, "model", None),
+                    analysis_id=analysis_tracking_id,
+                )
 
             logger.exception(
                 "Falha durante execução do agente",
@@ -548,6 +634,13 @@ class EvaluationRunner:
                 },
             )
 
+            error_metadata = {
+                "reference_sql_ms": reference_sql_ms,
+            }
+
+            if llm_usage is not None:
+                error_metadata["llm_metrics"] = llm_usage
+
             return self._error_result(
                 case,
                 exc,
@@ -555,10 +648,13 @@ class EvaluationRunner:
                 provider=self.provider_name,
                 model=getattr(analyst, "model", None),
                 duration_ms=analysis_duration_ms,
-                metadata={
-                    "reference_sql_ms": reference_sql_ms,
-                },
+                metadata=error_metadata,
             )
+
+        analysis_duration_ms = round(
+            (perf_counter() - analysis_start) * 1000,
+            2,
+        )
 
         # ------------------------------------------------------
         # 3. Validar o retorno do agente.
@@ -567,20 +663,38 @@ class EvaluationRunner:
         if not isinstance(analysis, Mapping):
             error = TypeError("O BusinessAnalyst deve retornar um dicionário.")
 
+            llm_usage = self._snapshot_llm_metrics(
+                analysis_metrics,
+                provider=self.provider_name,
+                model=getattr(analyst, "model", None),
+                analysis_id=analysis_tracking_id,
+            )
+
             return self._error_result(
                 case,
                 error,
                 phase="analysis_validation",
                 provider=self.provider_name,
+                model=getattr(analyst, "model", None),
                 duration_ms=analysis_duration_ms,
                 metadata={
                     "reference_sql_ms": reference_sql_ms,
+                    "llm_metrics": llm_usage,
                 },
             )
 
         actual_model = analysis.get("model") or getattr(analyst, "model", None)
 
         actual_provider = analysis.get("provider") or self.provider_name
+
+        actual_analysis_id = analysis.get("analysis_id") or analysis_tracking_id
+
+        llm_usage = self._snapshot_llm_metrics(
+            analysis_metrics,
+            provider=actual_provider,
+            model=actual_model,
+            analysis_id=actual_analysis_id,
+        )
 
         analysis_mode = analysis.get(
             "analysis_mode",
@@ -639,6 +753,7 @@ class EvaluationRunner:
                             "category": case.category,
                             "analysis_mode": analysis_mode,
                             "reference_sql_ms": reference_sql_ms,
+                            "llm_metrics": llm_usage,
                             **extraction_metadata,
                         },
                     )
@@ -674,6 +789,7 @@ class EvaluationRunner:
                 metadata={
                     "analysis_mode": analysis_mode,
                     "reference_sql_ms": reference_sql_ms,
+                    "llm_metrics": llm_usage,
                 },
             )
 
@@ -718,6 +834,7 @@ class EvaluationRunner:
                 metadata={
                     "analysis_mode": analysis_mode,
                     "reference_sql_ms": reference_sql_ms,
+                    "llm_metrics": llm_usage,
                 },
             )
 
@@ -728,7 +845,7 @@ class EvaluationRunner:
             )
 
         # ------------------------------------------------------
-        # 6. Registrar metadados operacionais.
+        # 6. Registrar metadados operacionais e consumo de LLM.
         # ------------------------------------------------------
 
         evaluation_result.metadata.update(
@@ -747,6 +864,7 @@ class EvaluationRunner:
                     "partial_success",
                     False,
                 ),
+                "llm_metrics": llm_usage,
                 **extraction_metadata,
             }
         )
@@ -761,6 +879,8 @@ class EvaluationRunner:
                 "provider": actual_provider,
                 "model": actual_model,
                 "duration_ms": analysis_duration_ms,
+                "llm_requests": llm_usage["requests"]["total"],
+                "llm_tokens": llm_usage["tokens"]["total"],
             },
         )
 

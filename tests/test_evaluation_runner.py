@@ -6,6 +6,7 @@ import pytest
 
 from ai_analyst.evaluation.models import EvaluationCase
 from ai_analyst.evaluation.runner import EvaluationRunner
+from ai_analyst.llm.metrics import LLMMetrics
 
 # ==========================================================
 # DEPENDÊNCIAS SIMULADAS
@@ -72,7 +73,6 @@ def make_case(
     required_columns: tuple[str, ...] = (),
     expected_analysis_mode: str | None = None,
 ) -> EvaluationCase:
-
     return EvaluationCase(
         case_id=case_id,
         question=question,
@@ -88,7 +88,6 @@ def make_analysis(
     results: list[dict[str, Any]] | None = None,
     **overrides: Any,
 ) -> dict[str, Any]:
-
     analysis = {
         "analysis_id": "analysis-test-001",
         "provider": "gemini",
@@ -110,7 +109,6 @@ def make_runner(
     reference_responses: dict[str, Any],
     provider_name: str = "gemini",
 ) -> EvaluationRunner:
-
     return EvaluationRunner(
         provider_name=provider_name,
         analyst_factory=lambda **kwargs: analyst,
@@ -124,7 +122,6 @@ def make_runner(
 
 
 def test_runner_uses_gemini_as_default_provider():
-
     analyst = FakeAnalyst([])
 
     runner = make_runner(
@@ -140,7 +137,6 @@ def test_runner_uses_gemini_as_default_provider():
     ["gemini", "openai", "anthropic"],
 )
 def test_runner_accepts_supported_providers(provider):
-
     analyst = FakeAnalyst([])
 
     runner = make_runner(
@@ -153,7 +149,6 @@ def test_runner_accepts_supported_providers(provider):
 
 
 def test_runner_normalizes_provider_name():
-
     runner = EvaluationRunner(
         provider_name=" OPENAI ",
         analyst_factory=lambda **kwargs: None,
@@ -164,7 +159,6 @@ def test_runner_normalizes_provider_name():
 
 
 def test_runner_rejects_unsupported_provider():
-
     with pytest.raises(
         ValueError,
         match="Provedor não suportado",
@@ -180,7 +174,6 @@ def test_runner_rejects_unsupported_provider():
 
 
 def test_runner_executes_successful_scenario():
-
     case = make_case()
 
     analyst = FakeAnalyst(
@@ -240,7 +233,6 @@ def test_runner_executes_successful_scenario():
 
 
 def test_runner_records_failed_comparison():
-
     case = make_case()
 
     analyst = FakeAnalyst(
@@ -276,7 +268,6 @@ def test_runner_records_failed_comparison():
 
 
 def test_runner_records_cache_hit():
-
     case = make_case()
 
     analyst = FakeAnalyst(
@@ -318,7 +309,6 @@ def test_runner_records_cache_hit():
 
 
 def test_runner_continues_after_reference_sql_failure():
-
     first_case = make_case(
         case_id="reference_error",
         reference_sql="INVALID SQL",
@@ -370,7 +360,6 @@ def test_runner_continues_after_reference_sql_failure():
 
 
 def test_runner_continues_after_agent_execution_failure():
-
     first_case = make_case(
         case_id="agent_error",
         reference_sql="SELECT 1",
@@ -424,11 +413,9 @@ def test_runner_continues_after_agent_execution_failure():
 
 
 def test_runner_handles_empty_dataset():
-
     analyst_factory_called = False
 
     def analyst_factory(**kwargs):
-
         nonlocal analyst_factory_called
 
         analyst_factory_called = True
@@ -457,7 +444,6 @@ def test_runner_handles_empty_dataset():
 
 
 def test_runner_rejects_invalid_case_objects():
-
     analyst = FakeAnalyst([])
 
     runner = make_runner(
@@ -478,7 +464,6 @@ def test_runner_rejects_invalid_case_objects():
 
 
 def test_runner_evaluates_multi_query_with_complete_result():
-
     case = make_case(
         required_columns=("city", "order_count"),
         expected_analysis_mode="multi_query",
@@ -552,7 +537,6 @@ def test_runner_evaluates_multi_query_with_complete_result():
 
 
 def test_runner_combines_compatible_scalar_results():
-
     case = make_case(
         required_columns=(
             "total_orders",
@@ -619,7 +603,6 @@ def test_runner_combines_compatible_scalar_results():
 
 
 def test_runner_rejects_conflicting_scalar_results():
-
     case = make_case(
         required_columns=(
             "total_orders",
@@ -679,7 +662,6 @@ def test_runner_rejects_conflicting_scalar_results():
 
 
 def test_runner_does_not_join_tables_using_unique_columns():
-
     case = make_case(
         required_columns=(
             "city",
@@ -755,7 +737,6 @@ def test_runner_does_not_join_tables_using_unique_columns():
 
 
 def test_runner_marks_unsupported_capability_as_skipped():
-
     case = make_case()
 
     analyst = FakeAnalyst(
@@ -801,7 +782,6 @@ def test_runner_marks_unsupported_capability_as_skipped():
 
 
 def test_runner_fails_when_single_query_is_used_instead_of_expected_multi_query():
-
     case = make_case(
         expected_analysis_mode="multi_query",
     )
@@ -840,8 +820,6 @@ def test_runner_fails_when_single_query_is_used_instead_of_expected_multi_query(
 
     assert result.status == "failed"
 
-    # A comparação SQL continua correta.
-    # A pontuação não deve ser alterada pela divergência de modo.
     assert result.score == 1.0
     assert result.metadata["result_comparison_status"] == "passed"
     assert result.metadata["result_comparison_score"] == 1.0
@@ -857,7 +835,6 @@ def test_runner_fails_when_single_query_is_used_instead_of_expected_multi_query(
 
 
 def test_runner_fails_when_multi_query_is_used_instead_of_expected_single_query():
-
     case = make_case(
         expected_analysis_mode="single_query",
     )
@@ -909,7 +886,6 @@ def test_runner_fails_when_multi_query_is_used_instead_of_expected_single_query(
 
 
 def test_runner_preserves_operational_error_when_analysis_mode_mismatches():
-
     case = make_case(
         expected_analysis_mode="multi_query",
     )
@@ -963,7 +939,6 @@ def test_runner_preserves_operational_error_when_analysis_mode_mismatches():
 
 
 def test_runner_generates_consolidated_metrics():
-
     cases = [
         make_case(
             case_id="case-1",
@@ -1028,7 +1003,6 @@ def test_runner_generates_consolidated_metrics():
 
 
 def test_report_serialization_includes_metrics():
-
     case = make_case()
 
     analyst = FakeAnalyst(
@@ -1066,3 +1040,250 @@ def test_report_serialization_includes_metrics():
     assert "metrics" in serialized["metadata"]
 
     assert serialized["metadata"]["metrics"]["summary"]["pass_rate"] == 100.0
+
+
+# ==========================================================
+# INTEGRAÇÃO DAS MÉTRICAS INDIVIDUAIS DE LLM
+# ==========================================================
+
+
+def test_runner_captures_llm_usage_for_successful_scenario(monkeypatch):
+    """Captura tokens, requisições, retries e latência do cenário."""
+
+    metrics = LLMMetrics()
+
+    monkeypatch.setattr(
+        "ai_analyst.evaluation.runner.llm_metrics",
+        metrics,
+    )
+
+    class MetricsAnalyst(FakeAnalyst):
+        def analyze(self, question: str) -> dict[str, Any]:
+            metrics.record_success(
+                model="fake-model",
+                duration_ms=120.0,
+                prompt_tokens=100,
+                output_tokens=50,
+                thinking_tokens=10,
+                total_tokens=160,
+                provider="gemini",
+            )
+
+            metrics.record_retry(provider="gemini")
+
+            metrics.record_success(
+                model="fake-model",
+                duration_ms=80.0,
+                prompt_tokens=30,
+                output_tokens=20,
+                thinking_tokens=5,
+                total_tokens=55,
+                provider="gemini",
+            )
+
+            return super().analyze(question)
+
+    case = make_case()
+
+    analyst = MetricsAnalyst(
+        [
+            make_analysis(
+                [{"total_orders": 60}],
+            ),
+        ]
+    )
+
+    runner = make_runner(
+        analyst=analyst,
+        reference_responses={
+            "SELECT 1": [{"total_orders": 60}],
+        },
+    )
+
+    report = runner.run(
+        cases=[case],
+        run_id="llm-usage-success",
+    )
+
+    assert report.passed_cases == 1
+
+    result = report.results[0]
+
+    assert result.status == "passed"
+
+    usage = result.metadata["llm_metrics"]
+
+    assert usage["analysis_id"]
+    assert usage["provider"] == "gemini"
+    assert usage["model"] == "fake-model"
+
+    assert usage["requests"] == {
+        "total": 2,
+        "successful": 2,
+        "failed": 0,
+        "retries": 1,
+    }
+
+    assert usage["tokens"] == {
+        "input": 130,
+        "output": 70,
+        "thinking": 15,
+        "total": 215,
+        "unreported": 0,
+    }
+
+    assert usage["latency"] == {
+        "total_ms": 200.0,
+        "average_ms": 100.0,
+    }
+
+
+def test_runner_captures_llm_usage_when_provider_fails(monkeypatch):
+    """Preserva as métricas de chamadas que falharam."""
+
+    metrics = LLMMetrics()
+
+    monkeypatch.setattr(
+        "ai_analyst.evaluation.runner.llm_metrics",
+        metrics,
+    )
+
+    class FailingMetricsAnalyst:
+        model = "fake-model"
+
+        def analyze(self, question: str) -> dict[str, Any]:
+            metrics.record_failure(
+                model="fake-model",
+                duration_ms=450.0,
+                provider="openai",
+            )
+
+            raise RuntimeError("Falha simulada no provedor.")
+
+    case = make_case()
+
+    runner = EvaluationRunner(
+        provider_name="openai",
+        analyst_factory=lambda **kwargs: FailingMetricsAnalyst(),
+        reference_executor=FakeReferenceExecutor(
+            {
+                "SELECT 1": [{"total_orders": 60}],
+            }
+        ),
+    )
+
+    report = runner.run(
+        cases=[case],
+        run_id="llm-usage-failure",
+    )
+
+    assert report.error_cases == 1
+
+    result = report.results[0]
+
+    assert result.status == "error"
+
+    usage = result.metadata["llm_metrics"]
+
+    assert usage["provider"] == "openai"
+    assert usage["model"] == "fake-model"
+
+    assert usage["requests"] == {
+        "total": 1,
+        "successful": 0,
+        "failed": 1,
+        "retries": 0,
+    }
+
+    assert usage["tokens"] == {
+        "input": 0,
+        "output": 0,
+        "thinking": 0,
+        "total": 0,
+        "unreported": 1,
+    }
+
+    assert usage["latency"] == {
+        "total_ms": 450.0,
+        "average_ms": 450.0,
+    }
+
+
+def test_runner_isolates_llm_metrics_between_scenarios(monkeypatch):
+    """Uma execução não deve herdar o consumo de outra."""
+
+    metrics = LLMMetrics()
+
+    monkeypatch.setattr(
+        "ai_analyst.evaluation.runner.llm_metrics",
+        metrics,
+    )
+
+    class PerScenarioMetricsAnalyst(FakeAnalyst):
+        def __init__(self, responses):
+            super().__init__(responses)
+            self.call_count = 0
+
+        def analyze(self, question: str) -> dict[str, Any]:
+            self.call_count += 1
+
+            metrics.record_success(
+                model="fake-model",
+                duration_ms=100.0,
+                prompt_tokens=self.call_count * 10,
+                output_tokens=self.call_count * 3,
+                provider="gemini",
+            )
+
+            return super().analyze(question)
+
+    cases = [
+        make_case(
+            case_id="scenario-1",
+            reference_sql="SELECT 1",
+        ),
+        make_case(
+            case_id="scenario-2",
+            reference_sql="SELECT 2",
+        ),
+    ]
+
+    analyst = PerScenarioMetricsAnalyst(
+        [
+            make_analysis([{"total_orders": 60}]),
+            make_analysis([{"total_orders": 80}]),
+        ]
+    )
+
+    runner = make_runner(
+        analyst=analyst,
+        reference_responses={
+            "SELECT 1": [{"total_orders": 60}],
+            "SELECT 2": [{"total_orders": 80}],
+        },
+    )
+
+    report = runner.run(
+        cases=cases,
+        run_id="llm-usage-isolation",
+    )
+
+    assert report.passed_cases == 2
+
+    first_usage = report.results[0].metadata["llm_metrics"]
+    second_usage = report.results[1].metadata["llm_metrics"]
+
+    assert first_usage["requests"]["total"] == 1
+    assert second_usage["requests"]["total"] == 1
+
+    assert first_usage["tokens"]["input"] == 10
+    assert second_usage["tokens"]["input"] == 20
+
+    assert first_usage["tokens"]["output"] == 3
+    assert second_usage["tokens"]["output"] == 6
+
+    assert first_usage["tokens"]["total"] == 13
+    assert second_usage["tokens"]["total"] == 26
+
+    assert first_usage["latency"]["total_ms"] == 100.0
+    assert second_usage["latency"]["total_ms"] == 100.0

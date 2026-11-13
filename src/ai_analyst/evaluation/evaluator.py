@@ -39,6 +39,9 @@ class ResultEvaluator:
         - Tolerâncias numéricas.
         - Ordenação das linhas, quando configurada.
 
+        As métricas adicionais de qualidade são armazenadas
+        nos metadados, sem alterar a semântica do score existente.
+
         Args:
             case: Cenário utilizado na avaliação.
             expected_rows: Resultado obtido pelo SQL de referência.
@@ -65,6 +68,14 @@ class ResultEvaluator:
         expected_schema = expected_columns | set(case.required_columns)
 
         differences: list[str] = []
+
+        # Métricas complementares de qualidade.
+        #
+        # Elas não alteram o score nem o critério de aprovação.
+        quality_metrics = {
+            "matched_rows": 0,
+            "matched_cells": 0,
+        }
 
         # 1. Validar o esquema de colunas.
 
@@ -93,6 +104,7 @@ class ResultEvaluator:
                 compared_columns,
                 case,
                 differences,
+                quality_metrics,
             )
         else:
             matched_rows = self._compare_ordered_rows(
@@ -101,13 +113,39 @@ class ResultEvaluator:
                 compared_columns,
                 case,
                 differences,
+                quality_metrics,
             )
 
-        # 3. Calcular o score.
+        # 3. Calcular as métricas complementares.
+        #
+        # Linhas sem correspondência são contabilizadas como
+        # oportunidades não correspondidas no denominador.
+        #
+        # Isso evita que linhas ausentes ou inesperadas sejam
+        # ignoradas no cálculo das taxas.
+
+        compared_rows = max(len(expected), len(actual))
+
+        matched_cells = quality_metrics["matched_cells"]
+
+        compared_cells = compared_rows * len(compared_columns)
+
+        row_accuracy = (
+            round(matched_rows / compared_rows * 100, 2) if compared_rows else None
+        )
+
+        cell_accuracy = (
+            round(matched_cells / compared_cells * 100, 2) if compared_cells else None
+        )
+
+        # 4. Calcular o score original.
         #
         # O score representa a proporção de linhas integralmente
         # correspondentes, com penalização adicional por erros
         # de esquema. Não representa precisão por célula.
+        #
+        # A fórmula original é preservada para não alterar
+        # a compatibilidade dos resultados existentes.
 
         row_units = max(
             len(expected),
@@ -128,7 +166,7 @@ class ResultEvaluator:
 
         score = round(score, 4)
 
-        # 4. Determinar o status.
+        # 5. Determinar o status.
 
         status = "passed" if not differences else "failed"
 
@@ -141,6 +179,13 @@ class ResultEvaluator:
             "actual_row_count": len(actual),
             "expected_columns": sorted(expected_schema),
             "actual_columns": sorted(actual_columns),
+            # Métricas complementares de qualidade.
+            "matched_rows": matched_rows,
+            "compared_rows": compared_rows,
+            "row_accuracy": row_accuracy,
+            "matched_cells": matched_cells,
+            "compared_cells": compared_cells,
+            "cell_accuracy": cell_accuracy,
         }
 
         if not expected and not actual:
@@ -382,6 +427,28 @@ class ResultEvaluator:
             for column in columns
         )
 
+    def _count_matching_cells(
+        self,
+        expected_row: dict[str, Any],
+        actual_row: dict[str, Any],
+        columns: list[str],
+        case: EvaluationCase,
+    ) -> int:
+        """Conta as células correspondentes entre duas linhas.
+
+        Respeita o mesmo critério de igualdade utilizado na
+        avaliação principal, incluindo tolerâncias numéricas.
+        """
+
+        return sum(
+            self._values_equal(
+                expected_row.get(column, _MISSING),
+                actual_row.get(column, _MISSING),
+                case,
+            )
+            for column in columns
+        )
+
     def _compare_unordered_rows(
         self,
         expected: list[dict[str, Any]],
@@ -389,6 +456,7 @@ class ResultEvaluator:
         columns: list[str],
         case: EvaluationCase,
         differences: list[str],
+        quality_metrics: dict[str, int] | None = None,
     ) -> int:
         """Compara linhas sem exigir a mesma ordem.
 
@@ -398,10 +466,13 @@ class ResultEvaluator:
         Linhas duplicadas são preservadas como registros distintos.
         Quando as quantidades diferem, as linhas excedentes são
         identificadas como ausentes ou inesperadas.
+
+        quality_metrics é opcional para preservar a compatibilidade
+        de chamadas existentes a este método.
         """
 
         if not expected:
-            for actual_index, actual_row in enumerate(actual):
+            for actual_row in actual:
                 differences.append(f"Linha inesperada no resultado: {actual_row!r}.")
 
             return 0
@@ -450,6 +521,14 @@ class ResultEvaluator:
             expected_row = expected[expected_index]
             actual_row = actual[actual_index]
 
+            if quality_metrics is not None:
+                quality_metrics["matched_cells"] += self._count_matching_cells(
+                    expected_row,
+                    actual_row,
+                    columns,
+                    case,
+                )
+
             if self._rows_equal(
                 expected_row,
                 actual_row,
@@ -484,6 +563,9 @@ class ResultEvaluator:
             if actual_index not in assigned_actual:
                 differences.append(f"Linha inesperada no resultado: {actual_row!r}.")
 
+        if quality_metrics is not None:
+            quality_metrics["matched_rows"] += matched_rows
+
         return matched_rows
 
     # ==========================================================
@@ -497,8 +579,13 @@ class ResultEvaluator:
         columns: list[str],
         case: EvaluationCase,
         differences: list[str],
+        quality_metrics: dict[str, int] | None = None,
     ) -> int:
-        """Compara linhas preservando a posição de cada registro."""
+        """Compara linhas preservando a posição de cada registro.
+
+        quality_metrics é opcional para preservar a compatibilidade
+        de chamadas existentes a este método.
+        """
 
         matched_rows = 0
 
@@ -510,6 +597,14 @@ class ResultEvaluator:
         for index in range(common_length):
             expected_row = expected[index]
             actual_row = actual[index]
+
+            if quality_metrics is not None:
+                quality_metrics["matched_cells"] += self._count_matching_cells(
+                    expected_row,
+                    actual_row,
+                    columns,
+                    case,
+                )
 
             if self._rows_equal(
                 expected_row,
@@ -540,6 +635,9 @@ class ResultEvaluator:
             differences.append(
                 f"Linha inesperada na posição {index + 1}: {actual[index]!r}."
             )
+
+        if quality_metrics is not None:
+            quality_metrics["matched_rows"] += matched_rows
 
         return matched_rows
 
