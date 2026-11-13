@@ -20,7 +20,6 @@ from ai_analyst.evaluation.models import EvaluationCase
 def make_case(
     case_id: str = "case-1",
 ) -> EvaluationCase:
-
     return EvaluationCase(
         case_id=case_id,
         question=f"Pergunta de teste {case_id}",
@@ -42,8 +41,6 @@ def make_benchmark_payload(
     by_provider = {}
 
     for provider in providers:
-        # Cada relatório individual precisa conter os resultados
-        # de todos os cenários efetivamente avaliados.
         report_results = [
             {
                 "case_id": case_id,
@@ -162,13 +159,30 @@ def make_benchmark_payload(
     }
 
 
+def make_benchmark_history_entry(
+    benchmark_id: str = "benchmark-test-001",
+) -> dict[str, Any]:
+    """Monta um registro resumido para a listagem do histórico."""
+
+    return {
+        "benchmark_id": benchmark_id,
+        "created_at": "2026-11-09T12:00:00+00:00",
+        "dataset_case_count": 2,
+        "dataset_sha256": "a" * 64,
+        "providers": ["gemini", "openai"],
+        "models": ["fake-model"],
+        "provider_count": 2,
+        "completed_providers": 2,
+        "failed_providers": 0,
+    }
+
+
 # ==========================================================
 # ARGUMENTOS DO BENCHMARK
 # ==========================================================
 
 
 def test_parser_accepts_benchmark_providers():
-
     parser = cli.build_parser()
 
     args = parser.parse_args(
@@ -191,7 +205,6 @@ def test_parser_accepts_benchmark_providers():
 
 
 def test_parser_defaults_benchmark_to_none():
-
     parser = cli.build_parser()
 
     args = parser.parse_args([])
@@ -200,7 +213,6 @@ def test_parser_defaults_benchmark_to_none():
 
 
 def test_parser_rejects_benchmark_with_validate_only():
-
     parser = cli.build_parser()
 
     with pytest.raises(SystemExit) as exc:
@@ -210,6 +222,123 @@ def test_parser_rejects_benchmark_with_validate_only():
                 "gemini",
                 "openai",
                 "--validate-only",
+            ]
+        )
+
+    assert exc.value.code == 2
+
+
+# ==========================================================
+# ARGUMENTOS DO HISTÓRICO
+# ==========================================================
+
+
+def test_parser_accepts_list_benchmarks():
+    parser = cli.build_parser()
+
+    args = parser.parse_args(
+        [
+            "--list-benchmarks",
+        ]
+    )
+
+    assert args.list_benchmarks is True
+    assert args.show_benchmark is None
+
+
+def test_parser_accepts_show_benchmark():
+    parser = cli.build_parser()
+
+    args = parser.parse_args(
+        [
+            "--show-benchmark",
+            "benchmark-test-001",
+        ]
+    )
+
+    assert args.show_benchmark == "benchmark-test-001"
+    assert args.list_benchmarks is False
+
+
+def test_parser_accepts_benchmark_history_filters():
+    parser = cli.build_parser()
+
+    args = parser.parse_args(
+        [
+            "--list-benchmarks",
+            "--filter-provider",
+            "gemini",
+            "--filter-model",
+            "gemini-2.5-flash",
+            "--limit",
+            "5",
+            "--offset",
+            "10",
+        ]
+    )
+
+    assert args.list_benchmarks is True
+    assert args.filter_provider == "gemini"
+    assert args.filter_model == "gemini-2.5-flash"
+    assert args.limit == 5
+    assert args.offset == 10
+
+
+def test_parser_defaults_benchmark_history_pagination():
+    parser = cli.build_parser()
+
+    args = parser.parse_args(
+        [
+            "--list-benchmarks",
+        ]
+    )
+
+    assert args.limit == 20
+    assert args.offset == 0
+
+
+def test_parser_rejects_list_benchmarks_with_benchmark_execution():
+    parser = cli.build_parser()
+
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(
+            [
+                "--list-benchmarks",
+                "--benchmark",
+                "gemini",
+                "openai",
+            ]
+        )
+
+    assert exc.value.code == 2
+
+
+def test_parser_rejects_show_benchmark_with_benchmark_execution():
+    parser = cli.build_parser()
+
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(
+            [
+                "--show-benchmark",
+                "benchmark-test-001",
+                "--benchmark",
+                "gemini",
+                "openai",
+            ]
+        )
+
+    assert exc.value.code == 2
+
+
+def test_parser_rejects_list_and_show_benchmark_together():
+    parser = cli.build_parser()
+
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(
+            [
+                "--list-benchmarks",
+                "--show-benchmark",
+                "benchmark-test-001",
             ]
         )
 
@@ -234,19 +363,31 @@ def test_execute_benchmark_uses_benchmark_runner(
 
     captured = {}
 
+    class FakeHistoryStore:
+        """Simula o armazenamento padrão da CLI."""
+
     class FakeBenchmarkRunner:
         def __init__(
             self,
             providers,
             dataset_path=None,
+            history_store=None,
         ):
             captured["providers"] = providers
             captured["dataset_path"] = dataset_path
+            captured["history_store"] = history_store
 
         def run(self, cases):
             captured["cases"] = cases
 
             return expected_payload
+
+    monkeypatch.setattr(
+        cli,
+        "BenchmarkHistory",
+        FakeHistoryStore,
+        raising=False,
+    )
 
     monkeypatch.setattr(
         benchmark_module,
@@ -273,6 +414,375 @@ def test_execute_benchmark_uses_benchmark_runner(
 
     assert captured["cases"] == cases
 
+    assert isinstance(
+        captured["history_store"],
+        FakeHistoryStore,
+    )
+
+
+def test_execute_benchmark_accepts_injected_history_store(
+    monkeypatch,
+):
+    """Um histórico externo deve ser reutilizado sem criar outro."""
+
+    cases = [
+        make_case(),
+    ]
+
+    expected_payload = make_benchmark_payload(
+        case_ids=("case-1",),
+    )
+
+    history_store = object()
+
+    captured = {}
+
+    class FakeBenchmarkRunner:
+        def __init__(
+            self,
+            providers,
+            dataset_path=None,
+            history_store=None,
+        ):
+            captured["providers"] = providers
+            captured["dataset_path"] = dataset_path
+            captured["history_store"] = history_store
+
+        def run(self, cases):
+            captured["cases"] = cases
+
+            return expected_payload
+
+    def unexpected_history_creation():
+        pytest.fail(
+            "A CLI não deve criar outro histórico quando "
+            "um armazenamento já foi injetado."
+        )
+
+    monkeypatch.setattr(
+        cli,
+        "BenchmarkHistory",
+        unexpected_history_creation,
+        raising=False,
+    )
+
+    monkeypatch.setattr(
+        benchmark_module,
+        "BenchmarkRunner",
+        FakeBenchmarkRunner,
+    )
+
+    payload = cli.execute_benchmark(
+        cases=cases,
+        providers=["gemini", "openai"],
+        dataset_path=None,
+        history_store=history_store,
+    )
+
+    assert payload == expected_payload
+
+    assert captured["history_store"] is history_store
+    assert captured["cases"] == cases
+
+
+# ==========================================================
+# CONSULTA DO HISTÓRICO
+# ==========================================================
+
+
+def test_main_lists_benchmarks_without_llm_authorization(
+    monkeypatch,
+    capsys,
+):
+    """A listagem do histórico não deve exigir autorização de LLM."""
+
+    entry = make_benchmark_history_entry()
+
+    captured = {}
+
+    class FakeHistoryStore:
+        def __init__(self):
+            captured["initialized"] = True
+
+        def list_benchmarks(
+            self,
+            limit,
+            offset,
+            provider=None,
+            model=None,
+        ):
+            captured["list_arguments"] = {
+                "limit": limit,
+                "offset": offset,
+                "provider": provider,
+                "model": model,
+            }
+
+            return [entry]
+
+        def count_benchmarks(
+            self,
+            provider=None,
+            model=None,
+        ):
+            captured["count_arguments"] = {
+                "provider": provider,
+                "model": model,
+            }
+
+            return 1
+
+    def unexpected_benchmark_execution(**kwargs):
+        pytest.fail("A listagem do histórico não deve executar benchmarks.")
+
+    monkeypatch.setattr(
+        cli,
+        "BenchmarkHistory",
+        FakeHistoryStore,
+        raising=False,
+    )
+
+    monkeypatch.setattr(
+        cli,
+        "execute_benchmark",
+        unexpected_benchmark_execution,
+    )
+
+    exit_code = cli.main(
+        [
+            "--list-benchmarks",
+        ]
+    )
+
+    captured_output = capsys.readouterr()
+
+    assert exit_code == cli.EXIT_SUCCESS
+    assert captured["initialized"] is True
+
+    assert captured["list_arguments"] == {
+        "limit": 20,
+        "offset": 0,
+        "provider": None,
+        "model": None,
+    }
+
+    assert captured["count_arguments"] == {
+        "provider": None,
+        "model": None,
+    }
+
+    assert "benchmark-test-001" in captured_output.out
+
+
+def test_main_lists_benchmarks_with_provider_model_filters_and_pagination(
+    monkeypatch,
+    capsys,
+):
+    """Os filtros devem ser encaminhados ao armazenamento do histórico."""
+
+    entries = [
+        make_benchmark_history_entry(
+            benchmark_id="benchmark-filtered-001",
+        ),
+    ]
+
+    captured = {}
+
+    class FakeHistoryStore:
+        def list_benchmarks(
+            self,
+            limit,
+            offset,
+            provider=None,
+            model=None,
+        ):
+            captured["list_arguments"] = {
+                "limit": limit,
+                "offset": offset,
+                "provider": provider,
+                "model": model,
+            }
+
+            return entries
+
+        def count_benchmarks(
+            self,
+            provider=None,
+            model=None,
+        ):
+            captured["count_arguments"] = {
+                "provider": provider,
+                "model": model,
+            }
+
+            return 15
+
+    monkeypatch.setattr(
+        cli,
+        "BenchmarkHistory",
+        FakeHistoryStore,
+        raising=False,
+    )
+
+    exit_code = cli.main(
+        [
+            "--list-benchmarks",
+            "--filter-provider",
+            "gemini",
+            "--filter-model",
+            "gemini-2.5-flash",
+            "--limit",
+            "5",
+            "--offset",
+            "10",
+        ]
+    )
+
+    captured_output = capsys.readouterr()
+
+    assert exit_code == cli.EXIT_SUCCESS
+
+    assert captured["list_arguments"] == {
+        "limit": 5,
+        "offset": 10,
+        "provider": "gemini",
+        "model": "gemini-2.5-flash",
+    }
+
+    assert captured["count_arguments"] == {
+        "provider": "gemini",
+        "model": "gemini-2.5-flash",
+    }
+
+    assert "benchmark-filtered-001" in captured_output.out
+
+
+def test_main_lists_benchmarks_handles_empty_history(
+    monkeypatch,
+    capsys,
+):
+    class FakeHistoryStore:
+        def list_benchmarks(
+            self,
+            limit,
+            offset,
+            provider=None,
+            model=None,
+        ):
+            return []
+
+        def count_benchmarks(
+            self,
+            provider=None,
+            model=None,
+        ):
+            return 0
+
+    monkeypatch.setattr(
+        cli,
+        "BenchmarkHistory",
+        FakeHistoryStore,
+        raising=False,
+    )
+
+    exit_code = cli.main(
+        [
+            "--list-benchmarks",
+        ]
+    )
+
+    captured_output = capsys.readouterr()
+
+    assert exit_code == cli.EXIT_SUCCESS
+    assert (
+        "Nenhum benchmark encontrado" in captured_output.out
+        or "Nenhum registro encontrado" in captured_output.out
+        or "Histórico vazio" in captured_output.out
+    )
+
+
+def test_main_shows_benchmark_by_id_without_llm_authorization(
+    monkeypatch,
+):
+    """A consulta por ID deve recuperar o relatório sem executar LLMs."""
+
+    expected_payload = make_benchmark_payload()
+
+    captured = {}
+
+    class FakeHistoryStore:
+        def get_benchmark(self, benchmark_id):
+            captured["benchmark_id"] = benchmark_id
+
+            return expected_payload
+
+    def fake_print_benchmark_report(payload):
+        captured["printed_payload"] = payload
+
+    def unexpected_benchmark_execution(**kwargs):
+        pytest.fail("A consulta de um benchmark não deve executar novos modelos.")
+
+    monkeypatch.setattr(
+        cli,
+        "BenchmarkHistory",
+        FakeHistoryStore,
+        raising=False,
+    )
+
+    monkeypatch.setattr(
+        cli,
+        "print_benchmark_report",
+        fake_print_benchmark_report,
+    )
+
+    monkeypatch.setattr(
+        cli,
+        "execute_benchmark",
+        unexpected_benchmark_execution,
+    )
+
+    exit_code = cli.main(
+        [
+            "--show-benchmark",
+            "benchmark-test-001",
+        ]
+    )
+
+    assert exit_code == cli.EXIT_SUCCESS
+    assert captured["benchmark_id"] == "benchmark-test-001"
+    assert captured["printed_payload"] == expected_payload
+
+
+def test_main_show_benchmark_returns_failure_when_id_does_not_exist(
+    monkeypatch,
+    capsys,
+):
+    class FakeHistoryStore:
+        def get_benchmark(self, benchmark_id):
+            return None
+
+    monkeypatch.setattr(
+        cli,
+        "BenchmarkHistory",
+        FakeHistoryStore,
+        raising=False,
+    )
+
+    exit_code = cli.main(
+        [
+            "--show-benchmark",
+            "benchmark-does-not-exist",
+        ]
+    )
+
+    captured_output = capsys.readouterr()
+
+    assert exit_code == cli.EXIT_FAILURE
+    assert (
+        "não encontrado" in captured_output.err.lower()
+        or "nao encontrado" in captured_output.err.lower()
+    )
+
 
 # ==========================================================
 # FORMATAÇÃO DO RELATÓRIO
@@ -282,7 +792,6 @@ def test_execute_benchmark_uses_benchmark_runner(
 def test_print_benchmark_report_displays_provider_metrics(
     capsys,
 ):
-
     payload = make_benchmark_payload()
 
     cli.print_benchmark_report(payload)
@@ -290,34 +799,24 @@ def test_print_benchmark_report_displays_provider_metrics(
     captured = capsys.readouterr()
 
     assert "MULTI-LLM BENCHMARK" in captured.out
-
     assert "benchmark-test-001" in captured.out
-
     assert "GEMINI" in captured.out
-
     assert "OPENAI" in captured.out
-
     assert "Taxa de aprovação: 100.00%" in captured.out
-
     assert "Score médio: 1.0000" in captured.out
-
     assert "Dataset SHA-256" in captured.out
 
 
 def test_print_benchmark_report_handles_failed_provider(
     capsys,
 ):
-
     payload = make_benchmark_payload()
 
     execution = payload["provider_runs"]["openai"]
 
     execution["execution_status"] = "error"
-
     execution["report"] = None
-
     execution["error"] = "Falha simulada"
-
     execution["error_type"] = "RuntimeError"
 
     payload["comparison"]["by_provider"]["openai"] = {
@@ -328,9 +827,7 @@ def test_print_benchmark_report_handles_failed_provider(
     }
 
     payload["summary"]["completed_providers"] = 1
-
     payload["summary"]["failed_providers"] = 1
-
     payload["summary"]["all_providers_completed"] = False
 
     cli.print_benchmark_report(payload)
@@ -338,11 +835,8 @@ def test_print_benchmark_report_handles_failed_provider(
     captured = capsys.readouterr()
 
     assert "GEMINI" in captured.out
-
     assert "OPENAI" in captured.out
-
     assert "Falha simulada" in captured.out
-
     assert "Status: ERRO" in captured.out
 
 
@@ -352,20 +846,16 @@ def test_print_benchmark_report_handles_failed_provider(
 
 
 def test_benchmark_exit_code_returns_success():
-
     payload = make_benchmark_payload()
 
     assert cli.benchmark_exit_code(payload) == cli.EXIT_SUCCESS
 
 
 def test_benchmark_exit_code_returns_failure_when_provider_fails():
-
     payload = make_benchmark_payload()
 
     payload["summary"]["failed_providers"] = 1
-
     payload["summary"]["completed_providers"] = 1
-
     payload["summary"]["all_providers_completed"] = False
 
     assert cli.benchmark_exit_code(payload) == cli.EXIT_FAILURE
@@ -382,7 +872,6 @@ def test_benchmark_exit_code_returns_failure_when_provider_fails():
 def test_benchmark_exit_code_returns_failure_for_incomplete_scenarios(
     status_field,
 ):
-
     payload = make_benchmark_payload()
 
     payload["provider_runs"]["gemini"]["report"]["summary"][status_field] = 1
@@ -391,7 +880,6 @@ def test_benchmark_exit_code_returns_failure_for_incomplete_scenarios(
 
 
 def test_benchmark_exit_code_rejects_incomplete_case_coverage():
-
     payload = make_benchmark_payload()
 
     payload["comparison"]["by_case"].pop("case-2")
@@ -400,7 +888,6 @@ def test_benchmark_exit_code_rejects_incomplete_case_coverage():
 
 
 def test_benchmark_exit_code_rejects_missing_provider_case_result():
-
     payload = make_benchmark_payload()
 
     payload["comparison"]["by_case"]["case-1"]["providers"].pop("openai")
@@ -409,7 +896,6 @@ def test_benchmark_exit_code_rejects_missing_provider_case_result():
 
 
 def test_benchmark_exit_code_rejects_missing_provider_report():
-
     payload = make_benchmark_payload()
 
     payload["provider_runs"]["openai"]["report"] = None
@@ -423,7 +909,6 @@ def test_benchmark_exit_code_rejects_missing_provider_report():
 
 
 def test_main_benchmark_requires_explicit_llm_authorization():
-
     with pytest.raises(SystemExit) as exc:
         cli.main(
             [
@@ -437,7 +922,6 @@ def test_main_benchmark_requires_explicit_llm_authorization():
 
 
 def test_main_benchmark_rejects_single_provider():
-
     with pytest.raises(SystemExit) as exc:
         cli.main(
             [
@@ -451,7 +935,6 @@ def test_main_benchmark_rejects_single_provider():
 
 
 def test_main_benchmark_rejects_duplicate_providers():
-
     with pytest.raises(SystemExit) as exc:
         cli.main(
             [
@@ -468,7 +951,6 @@ def test_main_benchmark_rejects_duplicate_providers():
 def test_main_benchmark_executes_with_explicit_authorization(
     monkeypatch,
 ):
-
     cases = [
         make_case("case-1"),
         make_case("case-2"),
@@ -529,7 +1011,6 @@ def test_main_benchmark_executes_with_explicit_authorization(
 def test_main_benchmark_preserves_case_filter(
     monkeypatch,
 ):
-
     cases = [
         make_case("case-1"),
         make_case("case-2"),
@@ -591,7 +1072,6 @@ def test_main_benchmark_exports_json_report(
     monkeypatch,
     tmp_path,
 ):
-
     cases = [
         make_case("case-1"),
         make_case("case-2"),
@@ -637,7 +1117,6 @@ def test_main_benchmark_exports_json_report(
     saved_payload = json.loads(output_path.read_text(encoding="utf-8"))
 
     assert saved_payload["benchmark_id"] == "benchmark-test-001"
-
     assert saved_payload["dataset"]["case_count"] == 2
 
     assert set(saved_payload["provider_runs"]) == {
@@ -649,7 +1128,6 @@ def test_main_benchmark_exports_json_report(
 def test_main_benchmark_returns_failure_for_partial_provider_failure(
     monkeypatch,
 ):
-
     cases = [
         make_case("case-1"),
     ]
@@ -665,13 +1143,10 @@ def test_main_benchmark_returns_failure_for_partial_provider_failure(
     )
 
     payload["summary"]["completed_providers"] = 1
-
     payload["summary"]["failed_providers"] = 1
-
     payload["summary"]["all_providers_completed"] = False
 
     payload["provider_runs"]["openai"]["execution_status"] = "error"
-
     payload["provider_runs"]["openai"]["report"] = None
 
     monkeypatch.setattr(
@@ -701,7 +1176,6 @@ def test_main_benchmark_returns_failure_for_partial_provider_failure(
 def test_main_benchmark_handles_execution_exception(
     monkeypatch,
 ):
-
     cases = [
         make_case("case-1"),
     ]

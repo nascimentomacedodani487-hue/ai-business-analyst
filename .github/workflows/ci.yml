@@ -31,7 +31,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.14"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
 
     steps:
 
@@ -56,6 +56,10 @@ jobs:
       - name: Install project and development dependencies
         run: |
           python -m pip install -e ".[dev]"
+
+      - name: Check installed dependencies
+        run: |
+          python -m pip check
 
       # ----------------------------------------------------
       # GENERATE SYNTHETIC DATABASE
@@ -121,7 +125,6 @@ jobs:
                   )
 
                   # Create the persistent DuckDB table.
-                  # Consume the complete result before continuing.
                   connection.execute(
                       f'''
                       CREATE OR REPLACE TABLE "{table_name}"
@@ -134,7 +137,6 @@ jobs:
                   )
 
                   # Validate the persisted table.
-                  # fetchall() ensures no unfinished result remains.
                   count_rows = connection.execute(
                       f'SELECT COUNT(*) FROM "{table_name}"'
                   ).fetchall()
@@ -175,11 +177,11 @@ jobs:
 
       - name: Run Ruff lint
         run: |
-          ruff check src tests
+          ruff check .
 
       - name: Check Python formatting
         run: |
-          ruff format --check src tests
+          ruff format --check .
 
       # ----------------------------------------------------
       # EVALUATION DATASET

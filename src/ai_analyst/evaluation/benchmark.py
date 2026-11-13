@@ -6,6 +6,9 @@ relatórios individuais e produz uma comparação consolidada.
 O módulo não realiza chamadas diretamente às APIs. As chamadas
 são delegadas ao EvaluationRunner. Isso permite injetar runners
 simulados nos testes e evitar consumo de quotas.
+
+A persistência histórica é opcional e delegada ao BenchmarkHistory,
+injetado pelo construtor.
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ from ai_analyst.evaluation.dataset import (
     DATASET_VERSION,
     load_evaluation_dataset,
 )
+from ai_analyst.evaluation.history import BenchmarkHistory
 from ai_analyst.evaluation.models import EvaluationCase
 from ai_analyst.evaluation.runner import (
     SUPPORTED_PROVIDERS,
@@ -50,6 +54,7 @@ class BenchmarkRunner:
     - Gera fingerprint SHA-256 do dataset efetivamente avaliado.
     - Preserva os relatórios individuais dos provedores.
     - Consolida métricas por provedor, categoria e cenário.
+    - Permite persistir os resultados por injeção de dependência.
 
     O benchmark não aplica pesos arbitrários para determinar
     um vencedor. As métricas são apresentadas separadamente para
@@ -61,6 +66,7 @@ class BenchmarkRunner:
         providers: Iterable[str] = DEFAULT_BENCHMARK_PROVIDERS,
         dataset_path: str | Path | None = None,
         runner_factory: Callable[..., Any] | None = None,
+        history_store: BenchmarkHistory | None = None,
     ):
         """Inicializa o benchmark.
 
@@ -70,6 +76,9 @@ class BenchmarkRunner:
             dataset_path: Caminho opcional do dataset.
             runner_factory: Fábrica injetável de EvaluationRunner.
                 Deve aceitar provider_name e dataset_path.
+            history_store: Armazenamento histórico opcional.
+                Quando informado, o relatório consolidado é persistido
+                antes de ser retornado ao chamador.
 
         Raises:
             TypeError: Quando os provedores não são uma coleção
@@ -125,6 +134,8 @@ class BenchmarkRunner:
         self.runner_factory = (
             runner_factory if runner_factory is not None else EvaluationRunner
         )
+
+        self.history_store = history_store
 
     # ==========================================================
     # VALIDAÇÃO DOS CENÁRIOS
@@ -313,6 +324,15 @@ class BenchmarkRunner:
         Quando os dois formatos estão presentes, os dados de
         summary do relatório têm prioridade para contagens e
         taxa de aprovação.
+
+        Métricas de qualidade e utilização de LLM são preservadas
+        diretamente do resumo consolidado:
+        - row_accuracy;
+        - cell_accuracy;
+        - llm_usage.
+
+        Os novos campos são opcionais para manter compatibilidade
+        com relatórios de versões anteriores do Evaluation Engine.
         """
 
         run_summary = report.get("summary", {})
@@ -331,11 +351,6 @@ class BenchmarkRunner:
         if not isinstance(metric_summary, Mapping):
             metric_summary = {}
 
-        # As métricas consolidadas também são utilizadas nos
-        # relatórios segmentados por categoria.
-        #
-        # O summary do relatório individual tem prioridade
-        # quando contém valores equivalentes.
         combined_summary = {
             **metric_summary,
             **run_summary,
@@ -386,6 +401,9 @@ class BenchmarkRunner:
             "average_duration_ms": combined_summary.get("average_duration_ms"),
             "cache_hit_rate": combined_summary.get("cache_hit_rate"),
             "analysis_mode_adherence": combined_summary.get("analysis_mode_adherence"),
+            "row_accuracy": combined_summary.get("row_accuracy"),
+            "cell_accuracy": combined_summary.get("cell_accuracy"),
+            "llm_usage": combined_summary.get("llm_usage"),
         }
 
     # ==========================================================
@@ -417,7 +435,7 @@ class BenchmarkRunner:
             if not isinstance(report, Mapping):
                 comparison[provider] = {
                     "execution_status": "error",
-                    "error": ("Relatório do provedor inválido."),
+                    "error": "Relatório do provedor inválido.",
                     "error_type": "InvalidBenchmarkReport",
                     "metrics": None,
                 }
@@ -446,7 +464,8 @@ class BenchmarkRunner:
 
         Cada categoria utiliza o resumo produzido pelo próprio
         Evaluation Engine, preservando contagens, taxas, score,
-        latência, cache e aderência ao planejamento.
+        latência, cache, aderência ao planejamento, qualidade
+        dos resultados e utilização de LLM.
         """
 
         categories: dict[
@@ -482,8 +501,6 @@ class BenchmarkRunner:
                 if not isinstance(category_metrics, Mapping):
                     continue
 
-                # category_metrics já é um resumo completo
-                # produzido por metrics._summarize().
                 synthetic_report = {
                     "metadata": {
                         "metrics": {
@@ -511,7 +528,22 @@ class BenchmarkRunner:
         cases: list[EvaluationCase],
         provider_runs: Mapping[str, Mapping[str, Any]],
     ) -> dict[str, dict[str, Any]]:
-        """Compara o comportamento dos provedores por cenário."""
+        """Compara qualidade, execução e consumo de LLM por cenário.
+
+        Preserva as métricas individuais produzidas pelo
+        EvaluationRunner, sem recalcular valores.
+
+        Cada provedor apresenta:
+        - Status, score e duração.
+        - Modo de análise e aderência ao modo esperado.
+        - Indicadores de cache e erro.
+        - Linhas e células comparadas e correspondentes.
+        - Precisão por linha e por célula.
+        - Métricas individuais de utilização de LLM.
+
+        Campos indisponíveis são representados por None,
+        mantendo um contrato consistente entre provedores.
+        """
 
         comparison: dict[str, dict[str, Any]] = {}
 
@@ -531,6 +563,13 @@ class BenchmarkRunner:
                         "analysis_mode": None,
                         "analysis_mode_matches": None,
                         "cache_hit": None,
+                        "matched_rows": None,
+                        "compared_rows": None,
+                        "row_accuracy": None,
+                        "matched_cells": None,
+                        "compared_cells": None,
+                        "cell_accuracy": None,
+                        "llm_metrics": None,
                         "error": execution.get("error"),
                     }
 
@@ -559,6 +598,13 @@ class BenchmarkRunner:
                         "analysis_mode": None,
                         "analysis_mode_matches": None,
                         "cache_hit": None,
+                        "matched_rows": None,
+                        "compared_rows": None,
+                        "row_accuracy": None,
+                        "matched_cells": None,
+                        "compared_cells": None,
+                        "cell_accuracy": None,
+                        "llm_metrics": None,
                         "error": (
                             "O relatório não contém resultado "
                             f"para o cenário '{case.case_id}'."
@@ -584,17 +630,74 @@ class BenchmarkRunner:
                         "analysis_mode_matches"
                     ),
                     "cache_hit": matching_result.get("cache_hit"),
+                    "matched_rows": result_metadata.get("matched_rows"),
+                    "compared_rows": result_metadata.get("compared_rows"),
+                    "row_accuracy": result_metadata.get("row_accuracy"),
+                    "matched_cells": result_metadata.get("matched_cells"),
+                    "compared_cells": result_metadata.get("compared_cells"),
+                    "cell_accuracy": result_metadata.get("cell_accuracy"),
+                    "llm_metrics": result_metadata.get("llm_metrics"),
                     "error": matching_result.get("error"),
                 }
 
             comparison[case.case_id] = {
                 "category": case.category,
                 "question": case.question,
-                "expected_analysis_mode": (case.expected_analysis_mode),
+                "expected_analysis_mode": case.expected_analysis_mode,
                 "providers": provider_results,
             }
 
         return comparison
+
+    # ==========================================================
+    # PERSISTÊNCIA HISTÓRICA
+    # ==========================================================
+
+    def _persist_benchmark(
+        self,
+        benchmark_report: dict[str, Any],
+    ) -> None:
+        """Persiste o relatório quando existe um armazenamento injetado.
+
+        Falhas de armazenamento são registradas e propagadas.
+        O benchmark não é considerado persistido quando a operação
+        do SQLite não termina com sucesso.
+        """
+
+        if self.history_store is None:
+            return
+
+        benchmark_id = benchmark_report["benchmark_id"]
+
+        logger.info(
+            "Persistindo benchmark no histórico",
+            extra={
+                "event": "benchmark_persistence_started",
+                "benchmark_id": benchmark_id,
+            },
+        )
+
+        try:
+            self.history_store.save_benchmark(benchmark_report)
+
+        except Exception:
+            logger.exception(
+                "Falha ao persistir benchmark no histórico",
+                extra={
+                    "event": "benchmark_persistence_failed",
+                    "benchmark_id": benchmark_id,
+                },
+            )
+
+            raise
+
+        logger.info(
+            "Benchmark persistido no histórico",
+            extra={
+                "event": "benchmark_persistence_completed",
+                "benchmark_id": benchmark_id,
+            },
+        )
 
     # ==========================================================
     # EXECUÇÃO COMPLETA DO BENCHMARK
@@ -617,6 +720,9 @@ class BenchmarkRunner:
 
         Uma falha individual não interrompe os demais provedores.
 
+        Quando history_store é informado, o relatório final é
+        persistido antes do retorno.
+
         Args:
             cases: Cenários opcionais. Quando omitido, utiliza
                 o dataset padrão ou o caminho configurado.
@@ -628,6 +734,11 @@ class BenchmarkRunner:
             - Configuração do benchmark.
             - Relatórios individuais dos provedores.
             - Comparação por provedor, categoria e cenário.
+
+        Raises:
+            ValueError: Quando o benchmark_id já existe no histórico
+                ou quando o relatório não atende ao contrato de persistência.
+            sqlite3.Error: Quando ocorre falha de armazenamento SQLite.
         """
 
         evaluation_cases = self._validate_cases(
@@ -708,7 +819,7 @@ class BenchmarkRunner:
                 "provider_count": len(provider_runs),
                 "completed_providers": completed_providers,
                 "failed_providers": failed_providers,
-                "all_providers_completed": (failed_providers == 0),
+                "all_providers_completed": failed_providers == 0,
             },
             "provider_runs": provider_runs,
             "comparison": {
@@ -718,6 +829,13 @@ class BenchmarkRunner:
             },
         }
 
+        # A persistência é opcional e ocorre somente quando
+        # o chamador injeta explicitamente um BenchmarkHistory.
+        #
+        # O relatório é armazenado antes do retorno.
+        # Qualquer falha de persistência é propagada para o chamador.
+        self._persist_benchmark(benchmark_report)
+
         logger.info(
             "Benchmark comparativo finalizado",
             extra={
@@ -726,6 +844,7 @@ class BenchmarkRunner:
                 "provider_count": len(provider_runs),
                 "completed_providers": completed_providers,
                 "failed_providers": failed_providers,
+                "persisted": self.history_store is not None,
             },
         )
 

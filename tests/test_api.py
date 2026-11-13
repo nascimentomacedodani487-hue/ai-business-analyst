@@ -4,6 +4,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from ai_analyst.agent.business_analyst import BusinessAnalyst
+from ai_analyst.agent.capability_validator import (
+    SQLIntentMismatchError,
+    UnsupportedAnalysisError,
+)
+from ai_analyst.agent.query_planner import QueryPlanError
+from ai_analyst.agent.sql_executor import SQLExecutionTimeoutError
 from ai_analyst.api.main import analysis_cache, app
 from ai_analyst.data.history import AnalysisHistory
 from ai_analyst.data.schema import TABLE_DOCS
@@ -135,6 +141,38 @@ def test_analyze_rejects_short_question():
     assert response.status_code == 422
 
 
+def test_analyze_rejects_whitespace_only_question(
+    monkeypatch,
+    tmp_path,
+):
+    """Rejeita perguntas compostas apenas por espaços."""
+
+    history = create_test_history(monkeypatch, tmp_path)
+
+    def unexpected_analyze(self, question):
+        pytest.fail("BusinessAnalyst não deveria ser inicializado.")
+
+    monkeypatch.setattr(
+        BusinessAnalyst,
+        "analyze",
+        unexpected_analyze,
+    )
+
+    response = client.post(
+        "/analyze",
+        json={"question": "   "},
+    )
+
+    assert response.status_code == 400
+
+    detail = response.json()["detail"]
+
+    assert detail["message"] == "A pergunta não pode estar vazia."
+    UUID(detail["analysis_id"])
+
+    assert history.count_analyses() == 0
+
+
 # ============================================================
 # TESTES DE TRATAMENTO DE ERROS DA ANÁLISE
 # ============================================================
@@ -164,7 +202,7 @@ def test_analyze_handles_rate_limit_error(monkeypatch, tmp_path):
 
     assert isinstance(detail, dict)
 
-    assert "limite de requisições" in (detail["message"].lower())
+    assert "limite de requisições" in detail["message"].lower()
 
     UUID(detail["analysis_id"])
 
@@ -222,9 +260,89 @@ def test_analyze_handles_provider_error(monkeypatch, tmp_path):
 
     assert isinstance(detail, dict)
 
-    assert "serviço de inteligência artificial" in (detail["message"].lower())
+    assert "serviço de inteligência artificial" in detail["message"].lower()
 
     UUID(detail["analysis_id"])
+
+
+@pytest.mark.parametrize(
+    ("error_class", "expected_status", "expected_message"),
+    [
+        (
+            UnsupportedAnalysisError,
+            422,
+            "A solicitação não pode ser respondida com os dados disponíveis.",
+        ),
+        (
+            QueryPlanError,
+            502,
+            "Não foi possível interpretar o planejamento gerado pelo serviço de IA.",
+        ),
+        (
+            SQLIntentMismatchError,
+            502,
+            "Não foi possível gerar uma consulta compatível com o objetivo solicitado.",
+        ),
+        (
+            ValueError,
+            500,
+            "Não foi possível concluir a análise.",
+        ),
+    ],
+)
+def test_analyze_returns_safe_messages_for_internal_exceptions(
+    monkeypatch,
+    tmp_path,
+    error_class,
+    expected_status,
+    expected_message,
+):
+    """Verifica a classificação e a sanitização das exceções."""
+
+    history = create_test_history(monkeypatch, tmp_path)
+
+    original_message = (
+        "INTERNAL_SECRET diagnostic: C:\\private\\credentials\\provider_config.json"
+    )
+
+    def simulate_failure(self, question):
+        raise error_class(original_message)
+
+    monkeypatch.setattr(
+        BusinessAnalyst,
+        "analyze",
+        simulate_failure,
+    )
+
+    response = client.post(
+        "/analyze",
+        json={
+            "question": "Qual foi o desempenho das entregas?",
+        },
+    )
+
+    assert response.status_code == expected_status
+
+    detail = response.json()["detail"]
+
+    assert isinstance(detail, dict)
+    assert detail["message"] == expected_message
+    assert original_message not in response.text
+    assert "INTERNAL_SECRET" not in response.text
+    assert "credentials" not in response.text
+
+    analysis_id = detail["analysis_id"]
+    UUID(analysis_id)
+
+    assert history.count_analyses() == 1
+
+    stored_analysis = history.get_analysis(analysis_id)
+
+    assert stored_analysis is not None
+    assert stored_analysis["status"] == "failure"
+
+    assert stored_analysis["error_type"] == error_class.__name__
+    assert stored_analysis["error_message"] == original_message
 
 
 # ============================================================
@@ -356,7 +474,6 @@ def test_api_reuses_cached_analysis(monkeypatch, tmp_path):
     assert calls["execution"] == 1
     assert calls["response"] == 1
 
-    # As duas análises devem ter sido persistidas.
     assert history.count_analyses() == 2
 
     first_saved = history.get_analysis(first_analysis_id)
@@ -786,7 +903,6 @@ def test_analysis_history_persists_after_reinitialization(
         ],
     )
 
-    # Simula uma nova inicialização da aplicação.
     reopened_history = AnalysisHistory(history.database_path)
 
     monkeypatch.setattr(
@@ -821,6 +937,7 @@ def test_analysis_history_persists_after_reinitialization(
     [
         (LLMRateLimitError, 503),
         (LLMTimeoutError, 504),
+        (SQLExecutionTimeoutError, 504),
         (LLMProviderError, 502),
     ],
 )
@@ -831,13 +948,29 @@ def test_api_persists_failed_analyses(
     expected_status,
 ):
     """
-    Verifica se falhas do provedor são persistidas no SQLite
-    e se o analysis_id retornado corresponde ao registro salvo.
+    Verifica se falhas do provedor e timeouts SQL são persistidos
+    no SQLite e se o analysis_id retornado corresponde ao registro salvo.
     """
 
     history = create_test_history(monkeypatch, tmp_path)
 
     error_message = "Falha simulada para teste."
+
+    expected_public_error_types = {
+        LLMRateLimitError: "Limite de requisições da IA",
+        LLMTimeoutError: "Tempo limite da IA",
+        SQLExecutionTimeoutError: "Tempo limite da consulta SQL",
+        LLMProviderError: "Falha no serviço de IA",
+    }
+
+    expected_public_error_messages = {
+        LLMRateLimitError: "O limite de requisições do serviço de IA foi atingido.",
+        LLMTimeoutError: "O serviço de IA excedeu o tempo máximo de resposta.",
+        SQLExecutionTimeoutError: (
+            "A consulta SQL ultrapassou o tempo máximo de execução."
+        ),
+        LLMProviderError: "O serviço de IA apresentou uma falha.",
+    }
 
     question = "Qual foi o desempenho das entregas?"
 
@@ -855,24 +988,22 @@ def test_api_persists_failed_analyses(
         json={"question": question},
     )
 
-    # Verifica o status HTTP.
     assert response.status_code == expected_status
 
-    # Verifica a estrutura da resposta de erro.
     detail = response.json()["detail"]
 
     assert isinstance(detail, dict)
     assert detail["message"]
     assert detail["analysis_id"]
 
-    # O identificador retornado precisa ser um UUID válido.
+    if error_class is SQLExecutionTimeoutError:
+        assert "consulta sql" in detail["message"].lower()
+
     response_analysis_id = detail["analysis_id"]
     UUID(response_analysis_id)
 
-    # A tentativa precisa ter sido persistida.
     assert history.count_analyses() == 1
 
-    # Recupera o registro pelo histórico.
     history_response = client.get(
         "/analyses/history",
         params={"status": "failure"},
@@ -887,25 +1018,26 @@ def test_api_persists_failed_analyses(
 
     analysis = history_data["items"][0]
 
-    # A resposta HTTP e o histórico devem usar o mesmo ID.
     assert analysis["analysis_id"] == response_analysis_id
 
-    # Verifica os dados principais da execução.
     assert analysis["question"] == question
     assert analysis["status"] == "failure"
     assert analysis["cache_hit"] is False
 
-    # Verifica as informações do erro.
-    assert analysis["error_type"] == error_class.__name__
-    assert analysis["error_message"] == error_message
+    assert analysis["error_type"] == expected_public_error_types[error_class]
+    assert error_class.__name__ not in history_response.text
 
-    # Verifica as métricas individuais.
-    assert analysis["llm_metrics"]["analysis_id"] == (response_analysis_id)
+    assert analysis["error_message"] == expected_public_error_messages[error_class]
 
-    # A falha acontece antes de uma análise ser concluída.
-    assert analysis["steps"] == []
+    assert analysis["error_message"] != error_message
 
-    # Confirma que o endpoint de detalhes recupera o mesmo registro.
+    assert "llm_metrics" not in analysis
+    assert "steps" not in analysis
+    assert "queries" not in analysis
+    assert "results" not in analysis
+    assert "answer" not in analysis
+    assert "chart" not in analysis
+
     detail_response = client.get(f"/analyses/history/{response_analysis_id}")
 
     assert detail_response.status_code == 200
@@ -914,8 +1046,174 @@ def test_api_persists_failed_analyses(
 
     assert saved_detail["analysis_id"] == response_analysis_id
     assert saved_detail["status"] == "failure"
-    assert saved_detail["error_type"] == error_class.__name__
-    assert saved_detail["error_message"] == error_message
+    assert saved_detail["error_type"] == expected_public_error_types[error_class]
+    assert error_class.__name__ not in detail_response.text
+
+    assert saved_detail["error_message"] == expected_public_error_messages[error_class]
+
+    assert saved_detail["error_message"] != error_message
+
+    stored_analysis = history.get_analysis(response_analysis_id)
+
+    assert stored_analysis is not None
+    assert stored_analysis["error_type"] == error_class.__name__
+    assert stored_analysis["error_message"] == error_message
+
+    assert saved_detail["llm_metrics"]["analysis_id"] == response_analysis_id
+    assert saved_detail["steps"] == []
+
+
+def test_analysis_history_detail_sanitizes_query_errors(
+    monkeypatch,
+    tmp_path,
+):
+    """Impede a exposição de erros técnicos nas consultas individuais."""
+
+    history = create_test_history(monkeypatch, tmp_path)
+
+    original_queries = [
+        {
+            "objective": "Consulta não suportada",
+            "status": "failure",
+            "failure_type": "unsupported_capability",
+            "error": "Internal capability diagnostic with sensitive details.",
+            "sql": None,
+            "results": [],
+        },
+        {
+            "objective": "Consulta com falha SQL",
+            "status": "failure",
+            "error": "Binder Error: internal database diagnostic.",
+            "sql": "SELECT * FROM unauthorized_table",
+            "results": [],
+        },
+    ]
+
+    history.save_analysis(
+        analysis_id="analysis-query-errors-001",
+        question="Analise duas consultas.",
+        status="success",
+        total_time_ms=150.0,
+        queries=original_queries,
+    )
+
+    response = client.get("/analyses/history/analysis-query-errors-001")
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert len(data["queries"]) == 2
+
+    assert data["queries"][0]["error"] == (
+        "Esta parte da análise não é compatível com os recursos disponíveis."
+    )
+
+    assert data["queries"][1]["error"] == (
+        "A análise não pôde ser concluída. "
+        "Os detalhes técnicos não são exibidos nesta listagem."
+    )
+
+    assert "Binder Error" not in data["queries"][1]["error"]
+    assert "unauthorized_table" not in data["queries"][1]["error"]
+
+    stored_analysis = history.get_analysis("analysis-query-errors-001")
+
+    assert stored_analysis["queries"] == original_queries
+
+
+# ============================================================
+# TESTES DE SANITIZAÇÃO DAS ETAPAS
+# ============================================================
+
+
+@pytest.mark.parametrize(
+    ("step_name", "step_status", "expected_public_details"),
+    [
+        (
+            "query_planning",
+            "unsupported",
+            "Esta etapa não é compatível com os dados disponíveis.",
+        ),
+        (
+            "sql_execution",
+            "failed",
+            "Não foi possível concluir esta etapa.",
+        ),
+        (
+            "response_generation",
+            "completed",
+            "Detalhes técnicos omitidos.",
+        ),
+        (
+            "cache_hit",
+            "completed",
+            ("Análise recuperada do cache. Nenhuma chamada à IA foi realizada."),
+        ),
+    ],
+)
+def test_analysis_history_detail_sanitizes_step_details(
+    monkeypatch,
+    tmp_path,
+    step_name,
+    step_status,
+    expected_public_details,
+):
+    """
+    Sanitiza detalhes das etapas sem modificar o registro original.
+    """
+
+    history = create_test_history(monkeypatch, tmp_path)
+
+    original_details = (
+        "INTERNAL_SECRET: database credentials and "
+        "C:\\private\\provider\\internal_config.json"
+    )
+
+    original_steps = [
+        {
+            "name": step_name,
+            "status": step_status,
+            "duration_ms": 125.0,
+            "details": original_details,
+        },
+    ]
+
+    history.save_analysis(
+        analysis_id=f"analysis-step-{step_name}",
+        question="Teste de sanitização das etapas.",
+        status="success",
+        total_time_ms=150.0,
+        steps=original_steps,
+    )
+
+    response = client.get(f"/analyses/history/analysis-step-{step_name}")
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert len(data["steps"]) == 1
+
+    public_step = data["steps"][0]
+
+    assert public_step["name"] == step_name
+    assert public_step["status"] == step_status
+    assert public_step["duration_ms"] == 125.0
+
+    assert public_step["details"] == expected_public_details
+
+    assert original_details not in response.text
+    assert "INTERNAL_SECRET" not in response.text
+    assert "credentials" not in response.text
+    assert "internal_config.json" not in response.text
+
+    # A sanitização pública não pode alterar o banco.
+    stored_analysis = history.get_analysis(f"analysis-step-{step_name}")
+
+    assert stored_analysis is not None
+    assert stored_analysis["steps"] == original_steps
+    assert stored_analysis["steps"][0]["details"] == original_details
 
 
 # ============================================================
@@ -1313,7 +1611,7 @@ def test_api_persists_multiple_queries_in_analysis_history(
     expected_queries = [
         {
             "objective": "Quantidade de pedidos por status",
-            "sql": ("SELECT status, COUNT(*) AS total FROM orders GROUP BY status"),
+            "sql": "SELECT status, COUNT(*) AS total FROM orders GROUP BY status",
             "status": "success",
             "results": [
                 {
@@ -1332,7 +1630,7 @@ def test_api_persists_multiple_queries_in_analysis_history(
         },
         {
             "objective": "Valor médio dos pedidos",
-            "sql": ("SELECT AVG(order_value) AS average_value FROM orders"),
+            "sql": "SELECT AVG(order_value) AS average_value FROM orders",
             "status": "success",
             "results": [
                 {
@@ -1392,10 +1690,8 @@ def test_api_persists_multiple_queries_in_analysis_history(
     response_data = response.json()
     analysis_id = response_data["analysis_id"]
 
-    # A resposta da API deve conter as duas consultas.
     assert len(response_data["queries"]) == 2
 
-    # A análise deve ter sido persistida.
     assert history.count_analyses() == 1
 
     saved_analysis = history.get_analysis(analysis_id)
@@ -1403,10 +1699,8 @@ def test_api_persists_multiple_queries_in_analysis_history(
     assert saved_analysis is not None
     assert saved_analysis["status"] == "success"
 
-    # O SQLite deve preservar todas as consultas.
     assert saved_analysis["queries"] == expected_queries
 
-    # O endpoint de detalhes deve recuperar os mesmos dados.
     detail_response = client.get(f"/analyses/history/{analysis_id}")
 
     assert detail_response.status_code == 200
@@ -1419,7 +1713,6 @@ def test_api_persists_multiple_queries_in_analysis_history(
 
     assert len(detail_data["queries"]) == 2
 
-    # Cada consulta precisa manter seu SQL independente.
     assert detail_data["queries"][0]["sql"] != detail_data["queries"][1]["sql"]
 
     assert all(query["status"] == "success" for query in detail_data["queries"])

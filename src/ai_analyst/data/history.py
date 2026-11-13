@@ -227,7 +227,7 @@ class AnalysisHistory:
     def _deserialize_record(
         record: sqlite3.Row,
     ) -> dict[str, Any]:
-        """Converte um registro SQLite para um dicionário."""
+        """Converte um registro SQLite completo para um dicionário."""
         return {
             "analysis_id": record["analysis_id"],
             "created_at": record["created_at"],
@@ -248,6 +248,164 @@ class AnalysisHistory:
             "chart": (
                 json.loads(record["chart_json"])
                 if record["chart_json"] is not None
+                else None
+            ),
+            "provider": record["provider"],
+            "model": record["model"],
+            "is_pinned": bool(record["is_pinned"]),
+            "is_locked": bool(record["is_locked"]),
+            "is_archived": bool(record["is_archived"]),
+            "project_id": record["project_id"],
+        }
+
+    @staticmethod
+    def _public_error_type(
+        error_type: str | None,
+    ) -> str | None:
+        """
+        Converte tipos técnicos de exceção em categorias públicas.
+
+        Os nomes originais das classes permanecem armazenados no SQLite.
+        Esta representação é destinada exclusivamente à exposição pela API.
+        """
+
+        if not isinstance(error_type, str) or not error_type.strip():
+            return None
+
+        public_types = {
+            "LLMRateLimitError": "Limite de requisições da IA",
+            "LLMTimeoutError": "Tempo limite da IA",
+            "SQLExecutionTimeoutError": "Tempo limite da consulta SQL",
+            "LLMTransientProviderError": "Indisponibilidade temporária da IA",
+            "LLMProviderError": "Falha no serviço de IA",
+            "SQLGuardrailError": "Falha na validação de segurança SQL",
+            "SQLSyntaxError": "Falha na consulta SQL",
+            "QueryPlanError": "Falha no planejamento",
+            "UnsupportedAnalysisError": "Solicitação não suportada",
+            "SQLIntentMismatchError": ("Incompatibilidade da consulta com o objetivo"),
+            "ValueError": "Falha de validação",
+        }
+
+        return public_types.get(error_type, "Falha interna")
+
+    @staticmethod
+    def _summary_error_message(
+        error_type: str | None,
+    ) -> str:
+        """
+        Retorna uma mensagem controlada para exibição na API.
+
+        A mensagem original da exceção permanece armazenada para
+        diagnóstico, mas não é incluída na representação pública.
+        """
+
+        messages = {
+            "LLMRateLimitError": (
+                "O limite de requisições do serviço de IA foi atingido."
+            ),
+            "LLMTimeoutError": ("O serviço de IA excedeu o tempo máximo de resposta."),
+            "SQLExecutionTimeoutError": (
+                "A consulta SQL ultrapassou o tempo máximo de execução."
+            ),
+            "LLMTransientProviderError": (
+                "O serviço de IA está temporariamente indisponível."
+            ),
+            "LLMProviderError": ("O serviço de IA apresentou uma falha."),
+            "SQLGuardrailError": (
+                "A consulta gerada não passou pelas validações de segurança."
+            ),
+            "SQLSyntaxError": ("A consulta SQL gerada não pôde ser executada."),
+            "QueryPlanError": ("Não foi possível validar o planejamento da análise."),
+            "UnsupportedAnalysisError": (
+                "A solicitação não pode ser respondida com os dados disponíveis."
+            ),
+            "SQLIntentMismatchError": (
+                "A consulta gerada não corresponde ao objetivo da análise."
+            ),
+            "ValueError": ("Não foi possível validar os dados da solicitação."),
+        }
+
+        safe_error_type = error_type if isinstance(error_type, str) else ""
+
+        return messages.get(
+            safe_error_type,
+            (
+                "A análise não pôde ser concluída. "
+                "Os detalhes técnicos não são exibidos nesta listagem."
+            ),
+        )
+
+    @staticmethod
+    def _calculate_partial_success(
+        queries: Any,
+    ) -> bool:
+        """Calcula se uma análise composta teve sucesso parcial."""
+
+        if not isinstance(queries, list):
+            return False
+
+        successful_count = 0
+        failed_count = 0
+        unsupported_count = 0
+
+        for query in queries:
+            if not isinstance(query, dict):
+                continue
+
+            if query.get("status") == "success":
+                successful_count += 1
+                continue
+
+            if query.get("status") != "failure":
+                continue
+
+            if query.get("failure_type") == "unsupported_capability":
+                unsupported_count += 1
+            else:
+                failed_count += 1
+
+        return successful_count > 0 and (unsupported_count > 0 or failed_count > 0)
+
+    @staticmethod
+    def _deserialize_summary_record(
+        record: sqlite3.Row,
+    ) -> dict[str, Any]:
+        """
+        Converte um registro para a representação resumida da listagem.
+
+        Não devolve:
+        - SQL executado.
+        - Resultados completos.
+        - Consultas independentes.
+        - Métricas detalhadas do LLM.
+        - Etapas internas.
+        - Mensagens originais de exceções.
+        - Nomes internos de classes de exceção.
+        """
+
+        try:
+            queries = json.loads(record["queries_json"] or "[]")
+        except (json.JSONDecodeError, TypeError):
+            queries = []
+
+        partial_success = AnalysisHistory._calculate_partial_success(queries)
+
+        status = record["status"]
+        original_error_type = record["error_type"]
+
+        return {
+            "analysis_id": record["analysis_id"],
+            "created_at": record["created_at"],
+            "question": record["question"],
+            "title": record["title"],
+            "status": status,
+            "partial_success": partial_success,
+            "total_time_ms": record["total_time_ms"],
+            "cache_hit": bool(record["cache_hit"]),
+            "error_type": AnalysisHistory._public_error_type(original_error_type),
+            "error_message": (
+                AnalysisHistory._summary_error_message(original_error_type)
+                if status == "failure"
                 else None
             ),
             "provider": record["provider"],
@@ -427,7 +585,7 @@ class AnalysisHistory:
         self,
         analysis_id: str,
     ) -> dict[str, Any] | None:
-        """Busca uma análise pelo identificador."""
+        """Busca uma análise completa pelo identificador."""
         with self._connect() as connection:
             record = connection.execute(
                 """
@@ -443,16 +601,24 @@ class AnalysisHistory:
 
         return self._deserialize_record(record)
 
-    def list_analyses(
+    def _list_analyses(
         self,
-        limit: int = 20,
-        offset: int = 0,
-        status: str | None = None,
-        search: str | None = None,
-        include_archived: bool = False,
-        project_id: str | None = None,
+        limit: int,
+        offset: int,
+        status: str | None,
+        search: str | None,
+        include_archived: bool,
+        project_id: str | None,
+        *,
+        summary: bool,
     ) -> dict[str, Any]:
-        """Lista análises com pesquisa, filtros e paginação."""
+        """
+        Executa a consulta comum de listagem.
+
+        A seleção de colunas depende da representação solicitada,
+        evitando carregar dados completos quando a listagem é resumida.
+        """
+
         if not 1 <= limit <= 100:
             raise ValueError("limit deve estar entre 1 e 100.")
 
@@ -490,6 +656,27 @@ class AnalysisHistory:
 
         where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
+        if summary:
+            selected_columns = """
+                analysis_id,
+                created_at,
+                question,
+                title,
+                status,
+                total_time_ms,
+                cache_hit,
+                error_type,
+                provider,
+                model,
+                is_pinned,
+                is_locked,
+                is_archived,
+                project_id,
+                queries_json
+            """
+        else:
+            selected_columns = "*"
+
         with self._connect() as connection:
             total = connection.execute(
                 f"""
@@ -502,7 +689,7 @@ class AnalysisHistory:
 
             records = connection.execute(
                 f"""
-                SELECT *
+                SELECT {selected_columns}
                 FROM analysis_history
                 {where_clause}
                 ORDER BY
@@ -514,8 +701,13 @@ class AnalysisHistory:
                 [*parameters, limit, offset],
             ).fetchall()
 
+        if summary:
+            items = [self._deserialize_summary_record(record) for record in records]
+        else:
+            items = [self._deserialize_record(record) for record in records]
+
         return {
-            "items": [self._deserialize_record(record) for record in records],
+            "items": items,
             "pagination": {
                 "total": total,
                 "limit": limit,
@@ -523,6 +715,57 @@ class AnalysisHistory:
                 "has_more": offset + len(records) < total,
             },
         }
+
+    def list_analyses(
+        self,
+        limit: int = 20,
+        offset: int = 0,
+        status: str | None = None,
+        search: str | None = None,
+        include_archived: bool = False,
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Lista análises com seus dados completos.
+
+        Mantido para compatibilidade com consumidores internos existentes.
+        A API de listagem deve utilizar list_analysis_summaries().
+        """
+
+        return self._list_analyses(
+            limit=limit,
+            offset=offset,
+            status=status,
+            search=search,
+            include_archived=include_archived,
+            project_id=project_id,
+            summary=False,
+        )
+
+    def list_analysis_summaries(
+        self,
+        limit: int = 20,
+        offset: int = 0,
+        status: str | None = None,
+        search: str | None = None,
+        include_archived: bool = False,
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Lista análises sem carregar ou expor seus dados completos.
+
+        Destinado aos endpoints de listagem e ao gerenciador de histórico.
+        """
+
+        return self._list_analyses(
+            limit=limit,
+            offset=offset,
+            status=status,
+            search=search,
+            include_archived=include_archived,
+            project_id=project_id,
+            summary=True,
+        )
 
     def rename_analysis(
         self,
@@ -703,7 +946,7 @@ class AnalysisHistory:
             description = description.strip() or None
 
             if description and len(description) > 500:
-                raise ValueError("A descrição deve ter no máximo 500 caracteres.")
+                raise ValueError("A descrição não pode ter mais de 500 caracteres.")
 
         project_id = str(uuid.uuid4())
         now = self._now()

@@ -16,6 +16,12 @@ from ai_analyst.agent.business_analyst import (
     BusinessAnalyst,
 )
 from ai_analyst.agent.cache import AnalysisCache
+from ai_analyst.agent.capability_validator import (
+    SQLIntentMismatchError,
+    UnsupportedAnalysisError,
+)
+from ai_analyst.agent.query_planner import QueryPlanError
+from ai_analyst.agent.sql_executor import SQLExecutionTimeoutError
 from ai_analyst.data.db import connect_readonly
 from ai_analyst.data.history import AnalysisHistory
 from ai_analyst.data.schema import COLUMN_DOCS, TABLE_DOCS
@@ -43,6 +49,10 @@ LOG_EXTRA_FIELDS = (
     "thinking_tokens",
     "max_output_tokens",
     "error_type",
+)
+
+SAFE_CACHE_HIT_DETAILS = (
+    "Análise recuperada do cache. Nenhuma chamada à IA foi realizada."
 )
 
 handler = logging.StreamHandler()
@@ -255,7 +265,7 @@ def _log_analysis_exception(
 
     if original_exception is not exc:
         logger.error(
-            "Causa original da falha do provedor.",
+            "Causa original da falha durante a análise.",
             exc_info=(
                 type(original_exception),
                 original_exception,
@@ -390,7 +400,7 @@ def analyze_business(
     Permite selecionar Gemini, OpenAI ou Anthropic.
     O Gemini é utilizado quando nenhum provedor é informado.
 
-    Todas as respostas de erro incluem o analysis_id.
+    Todas as respostas operacionais de erro incluem o analysis_id.
     """
 
     analysis_id = str(uuid.uuid4())
@@ -411,6 +421,16 @@ def analyze_business(
 
     selected_provider = request.provider
     selected_model = DEFAULT_MODELS[selected_provider]
+
+    # Rejeita perguntas contendo apenas espaços antes de inicializar o LLM.
+    if not request.question.strip():
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "A pergunta não pode estar vazia.",
+                "analysis_id": analysis_id,
+            },
+        )
 
     with llm_metrics.track_analysis(analysis_id) as individual_metrics:
         try:
@@ -448,14 +468,14 @@ def analyze_business(
 
             return result
 
-        except ValueError as exc:
+        except UnsupportedAnalysisError as exc:
             error_type = type(exc).__name__
             error_message = str(exc)
 
             logger.warning(
-                "Parâmetros inválidos para a análise.",
+                "Análise solicitada não suportada pelos dados disponíveis.",
                 extra={
-                    "event": "analysis_failed",
+                    "event": "analysis_not_supported",
                     "analysis_id": analysis_id,
                     "request_id": request_id,
                     "provider": selected_provider,
@@ -465,9 +485,90 @@ def analyze_business(
             )
 
             raise HTTPException(
-                status_code=400,
+                status_code=422,
                 detail={
-                    "message": str(exc),
+                    "message": (
+                        "A solicitação não pode ser respondida "
+                        "com os dados disponíveis."
+                    ),
+                    "analysis_id": analysis_id,
+                },
+            ) from exc
+
+        except QueryPlanError as exc:
+            error_type = type(exc).__name__
+            error_message = str(exc)
+
+            _log_analysis_exception(
+                exc,
+                analysis_id=analysis_id,
+                request_id=request_id,
+                provider=selected_provider,
+                model=selected_model,
+                duration_ms=round(
+                    (time.perf_counter() - start_time) * 1000,
+                    2,
+                ),
+            )
+
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "message": (
+                        "Não foi possível interpretar o planejamento "
+                        "gerado pelo serviço de IA."
+                    ),
+                    "analysis_id": analysis_id,
+                },
+            ) from exc
+
+        except SQLIntentMismatchError as exc:
+            error_type = type(exc).__name__
+            error_message = str(exc)
+
+            _log_analysis_exception(
+                exc,
+                analysis_id=analysis_id,
+                request_id=request_id,
+                provider=selected_provider,
+                model=selected_model,
+                duration_ms=round(
+                    (time.perf_counter() - start_time) * 1000,
+                    2,
+                ),
+            )
+
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "message": (
+                        "Não foi possível gerar uma consulta "
+                        "compatível com o objetivo solicitado."
+                    ),
+                    "analysis_id": analysis_id,
+                },
+            ) from exc
+
+        except ValueError as exc:
+            error_type = type(exc).__name__
+            error_message = str(exc)
+
+            _log_analysis_exception(
+                exc,
+                analysis_id=analysis_id,
+                request_id=request_id,
+                provider=selected_provider,
+                model=selected_model,
+                duration_ms=round(
+                    (time.perf_counter() - start_time) * 1000,
+                    2,
+                ),
+            )
+
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "message": "Não foi possível concluir a análise.",
                     "analysis_id": analysis_id,
                 },
             ) from exc
@@ -522,6 +623,33 @@ def analyze_business(
                     "message": (
                         "O serviço de inteligência artificial "
                         "demorou demais para responder."
+                    ),
+                    "analysis_id": analysis_id,
+                },
+            ) from exc
+
+        except SQLExecutionTimeoutError as exc:
+            error_type = type(exc).__name__
+            error_message = str(exc)
+
+            _log_analysis_exception(
+                exc,
+                analysis_id=analysis_id,
+                request_id=request_id,
+                provider=selected_provider,
+                model=selected_model,
+                duration_ms=round(
+                    (time.perf_counter() - start_time) * 1000,
+                    2,
+                ),
+            )
+
+            raise HTTPException(
+                status_code=504,
+                detail={
+                    "message": (
+                        "A consulta SQL ultrapassou o tempo máximo "
+                        "de execução permitido."
                     ),
                     "analysis_id": analysis_id,
                 },
@@ -651,6 +779,105 @@ def _require_analysis(analysis_id: str) -> dict:
     return result
 
 
+def _public_analysis_detail(analysis: dict) -> dict:
+    """
+    Cria uma representação pública dos detalhes de uma análise.
+
+    Preserva SQL, resultados, métricas e etapas, mas substitui
+    mensagens técnicas de exceções por mensagens controladas.
+
+    O registro original retornado pelo SQLite não é modificado.
+    """
+
+    public_analysis = dict(analysis)
+
+    # Sanitiza o tipo e a mensagem da falha principal.
+    original_error_type = public_analysis.get("error_type")
+
+    if public_analysis.get("error_message") is not None:
+        public_analysis["error_message"] = AnalysisHistory._summary_error_message(
+            original_error_type,
+        )
+
+    if original_error_type is not None:
+        public_analysis["error_type"] = AnalysisHistory._public_error_type(
+            original_error_type,
+        )
+
+    # Sanitiza tipos e mensagens de falhas individuais das consultas.
+    queries = public_analysis.get("queries")
+
+    if isinstance(queries, list):
+        public_queries = []
+
+        for query in queries:
+            if not isinstance(query, dict):
+                public_queries.append(query)
+                continue
+
+            public_query = dict(query)
+            original_query_error_type = public_query.get("error_type")
+
+            if public_query.get("error") is not None:
+                failure_type = public_query.get("failure_type")
+
+                if failure_type == "unsupported_capability":
+                    public_query["error"] = (
+                        "Esta parte da análise não é compatível "
+                        "com os recursos disponíveis."
+                    )
+                else:
+                    public_query["error"] = AnalysisHistory._summary_error_message(
+                        original_query_error_type,
+                    )
+
+            if original_query_error_type is not None:
+                public_query["error_type"] = AnalysisHistory._public_error_type(
+                    original_query_error_type,
+                )
+
+            public_queries.append(public_query)
+
+        public_analysis["queries"] = public_queries
+
+    # Sanitiza detalhes das etapas.
+    steps = public_analysis.get("steps")
+
+    if isinstance(steps, list):
+        public_steps = []
+
+        for step in steps:
+            if not isinstance(step, dict):
+                public_steps.append(step)
+                continue
+
+            public_step = dict(step)
+
+            if public_step.get("details") is not None:
+                step_name = public_step.get("name")
+                step_status = public_step.get("status")
+
+                if step_name == "cache_hit" and step_status == "completed":
+                    public_step["details"] = SAFE_CACHE_HIT_DETAILS
+
+                elif step_status == "unsupported":
+                    public_step["details"] = (
+                        "Esta etapa não é compatível com os dados disponíveis."
+                    )
+
+                elif step_status == "failed":
+                    public_step["details"] = "Não foi possível concluir esta etapa."
+
+                else:
+                    public_step["details"] = "Detalhes técnicos omitidos."
+
+            public_steps.append(public_step)
+
+        public_analysis["steps"] = public_steps
+
+    return public_analysis
+
+
 def _mutation_error(exc: ValueError) -> HTTPException:
     """Converte erros de negócio em respostas HTTP."""
 
@@ -686,7 +913,7 @@ def get_analysis_history(
     """Lista análises com paginação, pesquisa e filtros."""
 
     try:
-        return analysis_history.list_analyses(
+        return analysis_history.list_analysis_summaries(
             limit=limit,
             offset=offset,
             status=status,
@@ -712,10 +939,12 @@ def get_analysis_history(
 
 @app.get("/analyses/history/{analysis_id}")
 def get_analysis_history_detail(analysis_id: str):
-    """Retorna os detalhes de uma análise específica."""
+    """Retorna os detalhes completos de uma análise específica."""
 
     try:
-        return _require_analysis(analysis_id)
+        analysis = _require_analysis(analysis_id)
+
+        return _public_analysis_detail(analysis)
 
     except HTTPException:
         raise
@@ -982,7 +1211,7 @@ def remove_analysis_project(project_id: str):
         analysis_history.delete_project(project_id)
 
         return {
-            "message": ("Projeto excluído. As análises foram preservadas."),
+            "message": "Projeto excluído. As análises foram preservadas.",
             "project_id": project_id,
         }
 
