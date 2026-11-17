@@ -305,6 +305,49 @@ def get_llm_metrics(
     return llm_metrics.snapshot(provider=provider)
 
 
+@app.get("/metrics/llm/traces")
+def get_llm_traces(
+    provider: Literal[
+        "gemini",
+        "openai",
+        "anthropic",
+    ]
+    | None = Query(default=None),
+    analysis_id: str | None = Query(
+        default=None,
+        min_length=1,
+        max_length=128,
+    ),
+    request_id: str | None = Query(
+        default=None,
+        min_length=1,
+        max_length=128,
+    ),
+    status: Literal[
+        "success",
+        "failure",
+        "scheduled",
+    ]
+    | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=100),
+):
+    """Retorna traces recentes das chamadas aos provedores de LLM."""
+
+    items = llm_metrics.get_recent_traces(
+        provider=provider,
+        analysis_id=analysis_id,
+        request_id=request_id,
+        status=status,
+        limit=limit,
+    )
+
+    return {
+        "items": items,
+        "count": len(items),
+        "limit": limit,
+    }
+
+
 @app.get("/data/catalog")
 def get_data_catalog():
     """
@@ -432,7 +475,10 @@ def analyze_business(
             },
         )
 
-    with llm_metrics.track_analysis(analysis_id) as individual_metrics:
+    with llm_metrics.track_analysis(
+        analysis_id,
+        request_id=request_id,
+    ) as individual_metrics:
         try:
             analyst = BusinessAnalyst(
                 cache=analysis_cache,

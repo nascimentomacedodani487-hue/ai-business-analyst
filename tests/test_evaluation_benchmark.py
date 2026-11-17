@@ -1033,7 +1033,7 @@ def test_case_comparison_supports_legacy_results_without_quality_metrics():
         assert result["llm_metrics"] is None
 
 
-def test_benchmark_preserves_llm_metrics_from_multiple_scenarios():
+def test_benchmark_preserves_case_specific_llm_metrics():
     cases = [
         make_case(
             case_id="total_orders",
@@ -1120,6 +1120,98 @@ def test_benchmark_preserves_case_specific_llm_latency_and_retries():
         assert second_metrics["tokens"]["input"] == 200
         assert second_metrics["tokens"]["output"] == 100
         assert second_metrics["latency"]["total_ms"] == 500.0
+
+
+def test_benchmark_preserves_answer_evidence_validation(tmp_path):
+    """Preserva evidências SQL na comparação e no histórico."""
+
+    cases = [
+        make_case(),
+    ]
+
+    history = BenchmarkHistory(
+        tmp_path / "answer_evidence_benchmark_history.sqlite3",
+    )
+
+    expected_validation = {
+        "status": "verified",
+        "claims_checked": 1,
+        "supported_claims": 1,
+        "unsupported_claims": 0,
+        "fixture_marker": "answer-evidence-test",
+    }
+
+    def runner_factory(
+        provider_name: str,
+        dataset_path=None,
+    ):
+        report = make_report(
+            provider_name,
+            cases,
+        )
+
+        result_metadata = report["results"][0]["metadata"]
+
+        result_metadata.update(
+            {
+                "answer_evidence_validation": expected_validation,
+                "answer_evidence_status": "verified",
+                "answer_claims_supported": True,
+            }
+        )
+
+        return FakeRunner(
+            provider_name=provider_name,
+            report=report,
+        )
+
+    benchmark = BenchmarkRunner(
+        providers=["gemini", "openai"],
+        runner_factory=runner_factory,
+        history_store=history,
+    )
+
+    report = benchmark.run(
+        cases=cases,
+        benchmark_id="answer-evidence-001",
+    )
+
+    # 1. Relatório individual original.
+    original_metadata = report["provider_runs"]["gemini"]["report"]["results"][0][
+        "metadata"
+    ]
+
+    assert original_metadata["answer_evidence_validation"] == expected_validation
+    assert original_metadata["answer_evidence_status"] == "verified"
+    assert original_metadata["answer_claims_supported"] is True
+
+    # 2. Comparação consolidada por cenário.
+    comparison = report["comparison"]["by_case"]["total_orders"]["providers"]["gemini"]
+
+    assert comparison["answer_evidence_validation"] == expected_validation
+    assert comparison["answer_evidence_status"] == "verified"
+    assert comparison["answer_claims_supported"] is True
+
+    # 3. Recuperação do histórico SQLite.
+    stored_report = history.get_benchmark("answer-evidence-001")
+
+    assert stored_report is not None
+
+    stored_metadata = stored_report["provider_runs"]["gemini"]["report"]["results"][0][
+        "metadata"
+    ]
+
+    assert stored_metadata["answer_evidence_validation"] == expected_validation
+    assert stored_metadata["answer_evidence_status"] == "verified"
+    assert stored_metadata["answer_claims_supported"] is True
+
+    stored_comparison = stored_report["comparison"]["by_case"]["total_orders"][
+        "providers"
+    ]["gemini"]
+
+    assert stored_comparison["answer_evidence_validation"] == expected_validation
+    assert stored_comparison["answer_evidence_status"] == "verified"
+    assert stored_comparison["answer_claims_supported"] is True
 
 
 # ==========================================================
@@ -1491,3 +1583,380 @@ def test_benchmark_runner_does_not_overwrite_existing_history_record(tmp_path):
 
     assert stored_after == stored_before
     assert history.count_benchmarks() == 1
+
+
+# ==========================================================
+# REGRESSÕES DE REPETIBILIDADE E CUSTOS
+# ==========================================================
+
+
+def test_metric_snapshot_preserves_analysis_mode_adherence():
+    """Preserva a aderência ao modo de análise no snapshot."""
+
+    adherence = {
+        "expected_cases": 3,
+        "observed_cases": 3,
+        "unobserved_cases": 0,
+        "matches": 2,
+        "mismatches": 1,
+        "rate": 66.67,
+    }
+
+    report = {
+        "summary": {
+            "total_cases": 3,
+            "evaluated_cases": 3,
+            "pass_rate": 66.67,
+        },
+        "metadata": {
+            "metrics": {
+                "summary": {
+                    "analysis_mode_adherence": adherence,
+                },
+            },
+        },
+    }
+
+    snapshot = BenchmarkRunner._metric_snapshot(report)
+
+    assert snapshot["analysis_mode_adherence"] == adherence
+
+
+def test_metric_snapshot_returns_none_when_no_cases_were_evaluated():
+    """Ausência de avaliação não deve virar aprovação de zero por cento."""
+
+    report = {
+        "summary": {
+            "total_cases": 4,
+            "evaluated_cases": 0,
+            "passed_cases": 0,
+            "failed_cases": 0,
+            "error_cases": 0,
+            "skipped_cases": 4,
+            "pass_rate": 0.0,
+        },
+    }
+
+    snapshot = BenchmarkRunner._metric_snapshot(report)
+
+    assert snapshot["total_cases"] == 4
+    assert snapshot["evaluated_cases"] == 0
+    assert snapshot["pass_rate"] is None
+    assert snapshot["skipped_rate"] == 100.0
+
+
+def test_case_repeatability_excludes_skipped_score_but_preserves_usage():
+    """Skipped não contamina score, mas mantém consumo e duração."""
+
+    repetitions = [
+        {
+            "execution_status": "completed",
+            "report": {
+                "results": [
+                    {
+                        "case_id": "total_orders",
+                        "status": "skipped",
+                        "score": 0.0,
+                        "duration_ms": 100.0,
+                        "cache_hit": True,
+                        "metadata": {
+                            "llm_metrics": {
+                                "tokens": {
+                                    "input": 100,
+                                    "output": 50,
+                                    "total": 150,
+                                },
+                            },
+                        },
+                    },
+                ],
+            },
+        },
+        {
+            "execution_status": "completed",
+            "report": {
+                "results": [
+                    {
+                        "case_id": "total_orders",
+                        "status": "passed",
+                        "score": 0.9,
+                        "duration_ms": 200.0,
+                        "cache_hit": False,
+                        "metadata": {
+                            "llm_metrics": {
+                                "tokens": {
+                                    "input": 200,
+                                    "output": 100,
+                                    "total": 300,
+                                },
+                            },
+                        },
+                    },
+                ],
+            },
+        },
+    ]
+
+    comparison = BenchmarkRunner._build_case_repeatability(
+        repetition_runs=repetitions,
+        requested_runs=2,
+    )
+
+    case = comparison["total_orders"]
+
+    assert case["observed_runs"] == 2
+    assert case["passed_runs"] == 1
+    assert case["failed_or_error_runs"] == 0
+    assert case["skipped_runs"] == 1
+
+    metrics = case["metrics"]
+
+    # O skipped não entra na taxa de aprovação.
+    assert metrics["pass_rate"]["sample_count"] == 1
+    assert metrics["pass_rate"]["mean"] == 100.0
+
+    # Seu score padrão zero também não reduz a média.
+    assert metrics["score"]["sample_count"] == 1
+    assert metrics["score"]["mean"] == pytest.approx(0.9)
+
+    # Duração e cache continuam sendo observados.
+    assert metrics["duration_ms"]["sample_count"] == 2
+    assert metrics["duration_ms"]["mean"] == 150.0
+
+    assert metrics["cache_hit_rate"]["sample_count"] == 2
+    assert metrics["cache_hit_rate"]["mean"] == 50.0
+
+    # Tokens consumidos continuam presentes.
+    assert metrics["input_tokens"]["sample_count"] == 2
+    assert metrics["input_tokens"]["mean"] == 150.0
+
+    assert metrics["output_tokens"]["mean"] == 75.0
+    assert metrics["total_tokens"]["mean"] == 225.0
+
+
+def test_repeatability_separates_complete_costs_from_incomplete_subtotals():
+    """Custos incompletos não contaminam a média de custo total."""
+
+    cases = [make_case()]
+
+    complete_report = make_report(
+        "gemini",
+        cases,
+    )
+
+    complete_report["token_cost_summary"] = {
+        "currency": "USD",
+        "is_complete": True,
+        "estimated_cost_usd": 0.000000123456,
+        "requests_estimated": 2,
+        "requests_unestimated": 0,
+        "cases_with_cost_data": 1,
+        "cases_without_cost_data": 0,
+    }
+
+    incomplete_report = make_report(
+        "gemini",
+        cases,
+    )
+
+    incomplete_report["token_cost_summary"] = {
+        "currency": "USD",
+        "is_complete": False,
+        "estimated_cost_usd": 0.25,
+        "requests_estimated": 1,
+        "requests_unestimated": 1,
+        "cases_with_cost_data": 1,
+        "cases_without_cost_data": 0,
+    }
+
+    report_without_cost = make_report(
+        "gemini",
+        cases,
+    )
+
+    repetitions = [
+        {
+            "execution_status": "completed",
+            "report": complete_report,
+        },
+        {
+            "execution_status": "completed",
+            "report": incomplete_report,
+        },
+        {
+            "execution_status": "completed",
+            "report": report_without_cost,
+        },
+    ]
+
+    summary = BenchmarkRunner._build_repeatability_summary(
+        repetition_runs=repetitions,
+        requested_runs=3,
+    )
+
+    cost_metrics = summary["metrics"]
+
+    # Somente o custo explicitamente completo entra na média.
+    estimated_cost = cost_metrics["estimated_cost_usd"]
+
+    assert estimated_cost["sample_count"] == 1
+    assert estimated_cost["missing_runs"] == 2
+    assert estimated_cost["mean"] == pytest.approx(0.000000123456)
+
+    # O subtotal incompleto permanece em uma métrica separada.
+    known_subtotal = cost_metrics["known_cost_subtotal_usd"]
+
+    assert known_subtotal["sample_count"] == 1
+    assert known_subtotal["missing_runs"] == 2
+    assert known_subtotal["mean"] == pytest.approx(0.25)
+
+    assert summary["cost_observations"] == {
+        "requested_runs": 3,
+        "observed_runs": 2,
+        "complete_runs": 1,
+        "incomplete_runs": 1,
+        "missing_runs": 1,
+    }
+
+
+def test_repeatability_uses_report_level_cost_summary_as_source_of_truth():
+    """O resumo financeiro principal tem prioridade sobre métricas legadas."""
+
+    cases = [make_case()]
+
+    report = make_report(
+        "gemini",
+        cases,
+    )
+
+    report["token_cost_summary"] = {
+        "currency": "USD",
+        "is_complete": True,
+        "estimated_cost_usd": 0.005,
+    }
+
+    report["metadata"]["metrics"]["summary"]["llm_usage"]["token_cost_estimate"] = {
+        "is_complete": False,
+        "estimated_cost_usd": 99.0,
+    }
+
+    summary = BenchmarkRunner._build_repeatability_summary(
+        repetition_runs=[
+            {
+                "execution_status": "completed",
+                "report": report,
+            },
+        ],
+        requested_runs=1,
+    )
+
+    estimated_cost = summary["metrics"]["estimated_cost_usd"]
+
+    assert estimated_cost["sample_count"] == 1
+    assert estimated_cost["mean"] == pytest.approx(0.005)
+
+    assert summary["metrics"]["known_cost_subtotal_usd"]["sample_count"] == 0
+
+
+def test_repeatability_preserves_small_financial_values():
+    """A precisão estatística não deve arredondar custos pequenos para zero."""
+
+    summary = BenchmarkRunner._build_repeatability_summary(
+        repetition_runs=[
+            {
+                "execution_status": "completed",
+                "report": {
+                    "run_id": "small-cost-run",
+                    "summary": {
+                        "total_cases": 1,
+                        "evaluated_cases": 1,
+                        "pass_rate": 100.0,
+                    },
+                    "results": [],
+                    "metadata": {},
+                    "token_cost_summary": {
+                        "is_complete": True,
+                        "estimated_cost_usd": 0.000000123456,
+                    },
+                },
+            },
+        ],
+        requested_runs=1,
+    )
+
+    estimated_cost = summary["metrics"]["estimated_cost_usd"]
+
+    assert estimated_cost["mean"] == pytest.approx(0.000000123456)
+
+
+def test_benchmark_rejects_empty_mapping_as_invalid_report():
+    """Um dicionário vazio não deve ser classificado como execução concluída."""
+
+    cases = [make_case()]
+
+    def runner_factory(
+        provider_name: str,
+        dataset_path=None,
+    ):
+        return FakeRunner(
+            provider_name=provider_name,
+            report={},
+        )
+
+    benchmark = BenchmarkRunner(
+        providers=["gemini", "openai"],
+        runner_factory=runner_factory,
+    )
+
+    report = benchmark.run(cases=cases)
+
+    assert report["summary"]["completed_providers"] == 0
+    assert report["summary"]["failed_providers"] == 2
+
+    for provider in ("gemini", "openai"):
+        execution = report["provider_runs"][provider]
+
+        assert execution["execution_status"] == "error"
+        assert execution["error_type"] == "TypeError"
+        assert execution["report"] is None
+
+
+def test_benchmark_rejects_report_with_invalid_result_entries():
+    """Resultados sem case_id não atendem ao contrato mínimo."""
+
+    cases = [make_case()]
+
+    invalid_report = {
+        "run_id": "invalid-report",
+        "summary": {
+            "total_cases": 1,
+        },
+        "results": [
+            {
+                "status": "passed",
+                "score": 1.0,
+            },
+        ],
+        "metadata": {},
+    }
+
+    def runner_factory(
+        provider_name: str,
+        dataset_path=None,
+    ):
+        return FakeRunner(
+            provider_name=provider_name,
+            report=invalid_report,
+        )
+
+    benchmark = BenchmarkRunner(
+        providers=["gemini", "openai"],
+        runner_factory=runner_factory,
+    )
+
+    report = benchmark.run(cases=cases)
+
+    assert report["summary"]["failed_providers"] == 2
+
+    assert report["provider_runs"]["gemini"]["error_type"] == "TypeError"
+    assert report["provider_runs"]["openai"]["error_type"] == "TypeError"

@@ -3,18 +3,22 @@ Orquestrador principal do AI Business Analyst.
 
 Responsabilidades:
 - Identificar perguntas simples e compostas.
+- Decidir o comportamento adequado antes de executar SQL.
+- Preservar compatibilidade com provedores legados.
 - Planejar até cinco objetivos independentes.
 - Gerar, validar e executar SQL separadamente.
 - Recuperar erros SQL com limite de correções.
 - Permitir sucesso parcial entre consultas.
+- Produzir evidências comportamentais estruturadas.
+- Produzir evidências verificáveis das respostas analíticas.
 - Gerar interpretações e gráficos.
-- Preservar compatibilidade com o fluxo anterior.
 """
 
 import logging
 import re
 import unicodedata
 from time import perf_counter
+from typing import Any
 
 import duckdb
 
@@ -40,11 +44,21 @@ DEFAULT_MODELS = {
     "anthropic": "claude-haiku-4-5-20251001",
 }
 
-# Número máximo de correções semânticas por consulta.
 MAX_SQL_CORRECTIONS = 2
-
-# Limite absoluto de consultas independentes por análise.
 MAX_SQL_QUERIES = 5
+
+SUPPORTED_BEHAVIORS = {
+    "answer",
+    "ask_clarification",
+    "abstain",
+    "partial_answer",
+}
+
+NON_SQL_BEHAVIORS = {
+    "ask_clarification",
+    "abstain",
+    "partial_answer",
+}
 
 
 class BusinessAnalyst:
@@ -73,8 +87,6 @@ class BusinessAnalyst:
         self.model = DEFAULT_MODELS[normalized_provider]
 
         self.provider = None
-
-        # Compatibilidade com código e testes anteriores.
         self.gemini = None
 
         self.sql_executor = SQLExecutor()
@@ -84,10 +96,7 @@ class BusinessAnalyst:
         self.response_generator = None
         self.query_planner = None
 
-        # Etapas da análise atual.
         self.steps: list[dict] = []
-
-        # Preserva o último SQL gerado.
         self.last_sql: str | None = None
 
     def _initialize_ai_components(self):
@@ -119,6 +128,360 @@ class BusinessAnalyst:
 
         if self.query_planner is None:
             self.query_planner = QueryPlanner(provider=self.provider)
+
+    # ==========================================================
+    # COMPATIBILIDADE COM PROVEDORES
+    # ==========================================================
+
+    def _supports_structured_behavior(self) -> bool:
+        """
+        Verifica se o provedor oferece geração de respostas estruturadas.
+
+        Provedores com generate_json_response utilizam o fluxo
+        comportamental e a geração de evidências.
+
+        Provedores legados continuam utilizando os métodos
+        textuais, preservando o contrato anterior.
+        """
+
+        if self.provider is None:
+            return False
+
+        structured_method = getattr(
+            self.provider,
+            "generate_json_response",
+            None,
+        )
+
+        return callable(structured_method)
+
+    def _generate_legacy_sql(self, question: str) -> dict:
+        """Executa a geração SQL pelo contrato legado."""
+
+        sql = self.sql_generator.generate(question)
+
+        if not isinstance(sql, str) or not sql.strip():
+            raise ValueError("O SQLGenerator legado não retornou uma consulta válida.")
+
+        self.last_sql = sql
+
+        return {
+            "sql": sql,
+            "behavior": self._build_behavior(
+                "answer",
+                (
+                    "A pergunta foi encaminhada pelo fluxo SQL "
+                    "compatível com o provedor legado."
+                ),
+                sql_executed=False,
+            ),
+        }
+
+    def _plan_legacy_queries(self, question: str) -> dict:
+        """Executa o planejamento pelo contrato anterior."""
+
+        plan = self.query_planner.plan(question)
+
+        if isinstance(plan, dict):
+            objectives = plan.get("objectives")
+        else:
+            objectives = plan
+
+        if not isinstance(objectives, list):
+            raise ValueError("O planejador legado não retornou uma lista de objetivos.")
+
+        return {
+            "objectives": objectives,
+            "behavior": self._build_behavior(
+                "answer",
+                (
+                    "A pergunta foi dividida em objetivos independentes "
+                    "pelo planejador compatível com o contrato legado."
+                ),
+                sql_executed=False,
+            ),
+        }
+
+    # ==========================================================
+    # GERAÇÃO DE RESPOSTAS COM EVIDÊNCIAS
+    # ==========================================================
+
+    @staticmethod
+    def _normalize_generated_response(
+        generated: Any,
+    ) -> dict[str, Any]:
+        """
+        Valida o contrato retornado pelo ResponseGenerator.
+
+        A resposta textual continua sendo armazenada em answer.
+        As referências estruturadas ficam em answer_evidence.
+        """
+
+        if not isinstance(generated, dict):
+            raise ValueError(
+                "O ResponseGenerator não retornou um objeto estruturado válido."
+            )
+
+        answer = generated.get("answer")
+        answer_evidence = generated.get("answer_evidence")
+
+        if not isinstance(answer, str) or not answer.strip():
+            raise ValueError(
+                "O ResponseGenerator não retornou uma resposta textual válida."
+            )
+
+        if not isinstance(answer_evidence, list):
+            raise ValueError(
+                "O ResponseGenerator não retornou uma lista de evidências válida."
+            )
+
+        return {
+            "answer": answer.strip(),
+            "answer_evidence": answer_evidence,
+        }
+
+    def _generate_single_answer(
+        self,
+        question: str,
+        sql: str,
+        results: list[dict],
+    ) -> dict[str, Any]:
+        """
+        Gera a resposta de uma consulta simples.
+
+        Provedores estruturados produzem afirmações com evidências.
+        Provedores legados continuam produzindo somente texto.
+        """
+
+        if not self._supports_structured_behavior():
+            answer = self.response_generator.generate(
+                question=question,
+                sql=sql,
+                results=results,
+            )
+
+            if not isinstance(answer, str):
+                raise ValueError("O ResponseGenerator legado não retornou uma string.")
+
+            return {
+                "answer": answer,
+                "answer_evidence": [],
+            }
+
+        generated = self.response_generator.generate_with_evidence(
+            question=question,
+            sql=sql,
+            results=results,
+        )
+
+        return self._normalize_generated_response(generated)
+
+    def _generate_multi_answer(
+        self,
+        question: str,
+        queries: list[dict],
+    ) -> dict[str, Any]:
+        """
+        Gera a resposta de múltiplas consultas.
+
+        Provedores estruturados produzem afirmações com evidências.
+        Provedores legados continuam produzindo somente texto.
+        """
+
+        if not self._supports_structured_behavior():
+            answer = self.response_generator.generate_multi(
+                question=question,
+                queries=queries,
+            )
+
+            if not isinstance(answer, str):
+                raise ValueError("O ResponseGenerator legado não retornou uma string.")
+
+            return {
+                "answer": answer,
+                "answer_evidence": [],
+            }
+
+        generated = self.response_generator.generate_multi_with_evidence(
+            question=question,
+            queries=queries,
+        )
+
+        return self._normalize_generated_response(generated)
+
+    # ==========================================================
+    # EVIDÊNCIAS COMPORTAMENTAIS
+    # ==========================================================
+
+    @staticmethod
+    def _build_behavior(
+        behavior_type: str,
+        reason: str,
+        *,
+        clarification_question: str | None = None,
+        limitations: list[str] | None = None,
+        supported_information: list[str] | None = None,
+        sql_executed: bool = False,
+    ) -> dict:
+        """Monta o contrato padronizado de evidências comportamentais."""
+
+        if behavior_type not in SUPPORTED_BEHAVIORS:
+            raise ValueError(
+                f"Comportamento não suportado pelo BusinessAnalyst: {behavior_type!r}."
+            )
+
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError(
+                "Uma decisão comportamental precisa apresentar uma justificativa."
+            )
+
+        return {
+            "type": behavior_type,
+            "reason": reason.strip(),
+            "clarification_question": clarification_question,
+            "limitations": list(limitations or []),
+            "supported_information": list(supported_information or []),
+            "sql_executed": bool(sql_executed),
+        }
+
+    @staticmethod
+    def _build_behavior_answer(behavior: dict) -> str:
+        """Cria uma resposta textual para decisões comportamentais."""
+
+        if behavior["type"] == "ask_clarification":
+            clarification_question = behavior.get("clarification_question")
+
+            if not clarification_question:
+                raise ValueError(
+                    "A decisão ask_clarification precisa apresentar "
+                    "uma pergunta de esclarecimento."
+                )
+
+            return clarification_question
+
+        answer = behavior["reason"]
+
+        supported_information = behavior.get("supported_information", [])
+
+        if supported_information:
+            information_lines = [
+                f"- {information}" for information in supported_information
+            ]
+
+            answer = f"{answer.rstrip()}\n\nInformações disponíveis:\n" + "\n".join(
+                information_lines
+            )
+
+        limitations = behavior.get("limitations", [])
+
+        if limitations:
+            limitation_lines = [f"- {limitation}" for limitation in limitations]
+
+            answer = f"{answer.rstrip()}\n\nLimitações dos dados:\n" + "\n".join(
+                limitation_lines
+            )
+
+        return answer
+
+    def _build_non_sql_result(
+        self,
+        question: str,
+        behavior: dict,
+        *,
+        analysis_mode: str,
+        data_version: str,
+        analysis_start: float,
+        extra_metrics: dict | None = None,
+    ) -> dict:
+        """
+        Monta um resultado comportamental sem execução SQL.
+
+        Aceita ask_clarification, abstain e partial_answer.
+
+        Não atribui evidências SQL a respostas que não tiveram
+        resultados de consulta para fundamentá-las.
+        """
+
+        if behavior["type"] not in NON_SQL_BEHAVIORS:
+            raise ValueError(
+                "O resultado sem SQL exige ask_clarification, "
+                "abstain ou partial_answer."
+            )
+
+        if behavior["sql_executed"]:
+            raise ValueError(
+                "Não é permitido montar um resultado sem SQL com sql_executed=True."
+            )
+
+        answer = self._build_behavior_answer(behavior)
+
+        total_time = round(
+            (perf_counter() - analysis_start) * 1000,
+            2,
+        )
+
+        metrics = {
+            "total_time_ms": total_time,
+            "query_planning_ms": 0.0,
+            "sql_generation_ms": 0.0,
+            "sql_execution_ms": 0.0,
+            "response_generation_ms": 0.0,
+            "query_count": 0,
+            "successful_queries": 0,
+            "failed_queries": 0,
+            "unsupported_queries": 0,
+            "cache_hit": False,
+        }
+
+        if extra_metrics:
+            metrics.update(extra_metrics)
+
+        metrics["total_time_ms"] = total_time
+        metrics["cache_hit"] = False
+
+        result = {
+            "question": question,
+            "sql": None,
+            "results": [],
+            "total_results": 0,
+            "answer": answer,
+            "answer_evidence": [],
+            "chart": None,
+            "queries": [],
+            "query_count": 0,
+            "successful_queries": 0,
+            "failed_queries": 0,
+            "unsupported_queries": 0,
+            "partial_success": behavior["type"] == "partial_answer",
+            "analysis_mode": analysis_mode,
+            "provider": self.provider_name,
+            "model": self.model,
+            "cache_hit": False,
+            "behavior": behavior,
+            "steps": self.steps,
+            "metrics": metrics,
+        }
+
+        self.cache.set(
+            question=question,
+            data_version=data_version,
+            result=result,
+            provider=self.provider_name,
+            model=self.model,
+        )
+
+        logger.info(
+            "Análise comportamental concluída sem SQL",
+            extra={
+                "event": "behavioral_analysis_without_sql",
+                "behavior": behavior["type"],
+                "provider": self.provider_name,
+                "model": self.model,
+                "total_time_ms": total_time,
+            },
+        )
+
+        return result
 
     # ==========================================================
     # CLASSIFICAÇÃO DE PERGUNTAS
@@ -155,9 +518,6 @@ class BusinessAnalyst:
         """
         Identifica perguntas que provavelmente contêm
         objetivos de negócio independentes.
-
-        A classificação é local e não utiliza uma chamada adicional
-        ao LLM para perguntas aparentemente simples.
         """
 
         normalized = cls._normalize_text(question)
@@ -211,22 +571,7 @@ class BusinessAnalyst:
 
     @classmethod
     def _is_time_column(cls, column: str) -> bool:
-        """
-        Identifica se uma coluna representa uma dimensão temporal.
-
-        Utiliza palavras completas, evitando classificações
-        indevidas causadas por simples correspondências parciais.
-
-        Exemplos reconhecidos:
-        - order_date
-        - order_month
-        - delivery_year
-        - created_at
-        - month
-        - year
-        - semana
-        - trimestre
-        """
+        """Identifica se uma coluna representa uma dimensão temporal."""
 
         time_terms = {
             "date",
@@ -255,12 +600,7 @@ class BusinessAnalyst:
 
     @classmethod
     def _is_ranking_question(cls, question: str) -> bool:
-        """
-        Identifica perguntas de ranking.
-
-        Rankings e listas de maiores ou menores valores devem
-        priorizar gráficos de barras, não gráficos de pizza.
-        """
+        """Identifica perguntas de ranking."""
 
         ranking_terms = {
             "top",
@@ -288,9 +628,7 @@ class BusinessAnalyst:
 
     @classmethod
     def _is_comparison_question(cls, question: str) -> bool:
-        """
-        Identifica perguntas que solicitam comparações explícitas.
-        """
+        """Identifica perguntas que solicitam comparações explícitas."""
 
         comparison_terms = {
             "comparar",
@@ -311,10 +649,7 @@ class BusinessAnalyst:
 
     @classmethod
     def _is_distribution_question(cls, question: str) -> bool:
-        """
-        Identifica perguntas que solicitam proporções,
-        participação ou distribuição de valores.
-        """
+        """Identifica perguntas que solicitam proporções ou distribuição."""
 
         distribution_terms = {
             "distribuicao",
@@ -823,19 +1158,7 @@ class BusinessAnalyst:
         results: list[dict],
         question: str = "",
     ) -> dict | None:
-        """
-        Seleciona a visualização mais adequada com base
-        na pergunta e na estrutura dos resultados.
-
-        Estratégia:
-        - Séries temporais: linha.
-        - Métricas temporais independentes: barras agrupadas.
-        - Comparações temporais por categoria: barras agrupadas.
-        - Rankings: barras.
-        - Comparações: barras.
-        - Distribuições categóricas pequenas: pizza.
-        - Categorias e métricas gerais: barras.
-        """
+        """Seleciona a visualização mais adequada para os resultados."""
 
         if not results:
             return None
@@ -890,15 +1213,10 @@ class BusinessAnalyst:
             "payment",
         }
 
-        # ------------------------------------------------------
-        # DIMENSÕES TEMPORAIS
-        # ------------------------------------------------------
-
         time_columns = [
             column for column in categorical_columns if self._is_time_column(column)
         ]
 
-        # Prioriza a dimensão temporal no eixo horizontal.
         label_candidates = time_columns or categorical_columns
 
         label_key = max(
@@ -908,34 +1226,8 @@ class BusinessAnalyst:
 
         categories = {str(row[label_key]) for row in results}
 
-        # Evita gráficos com excesso de categorias.
         if len(categories) > 20:
             return None
-
-        # ------------------------------------------------------
-        # FORMATO LARGO: MÚLTIPLAS COLUNAS NUMÉRICAS
-        # ------------------------------------------------------
-        # Cada coluna numérica representa uma série diferente.
-        #
-        # Exemplo:
-        #
-        # {
-        #     "month": "2025-01",
-        #     "delivered_orders": 4901,
-        #     "canceled_orders": 186
-        # }
-        #
-        # Resultado:
-        #
-        # {
-        #     "month": "2025-01",
-        #     "series_0": 4901,
-        #     "series_1": 186
-        # }
-        #
-        # A propriedade "series" fornece os nomes que serão
-        # utilizados pelo frontend na legenda do gráfico.
-        # ------------------------------------------------------
 
         if time_columns and 2 <= len(numeric_columns) <= 8:
             wide_series_columns = numeric_columns
@@ -955,8 +1247,6 @@ class BusinessAnalyst:
             for row in results:
                 category_value = str(row[label_key])
 
-                # Evita sobrescrever silenciosamente resultados
-                # de meses ou períodos repetidos.
                 if category_value in seen_categories:
                     has_duplicate_category = True
                     break
@@ -1009,23 +1299,10 @@ class BusinessAnalyst:
                 },
             )
 
-        # ------------------------------------------------------
-        # SELEÇÃO DA MÉTRICA PRINCIPAL
-        # ------------------------------------------------------
-
         value_key = self._select_value_column(
             question=question,
             numeric_columns=numeric_columns,
         )
-
-        # ------------------------------------------------------
-        # IDENTIFICAÇÃO DA SEGUNDA DIMENSÃO CATEGÓRICA
-        # ------------------------------------------------------
-        # Exemplos:
-        # - Mês e status.
-        # - Mês e categoria.
-        # - Mês e método de pagamento.
-        # ------------------------------------------------------
 
         series_candidates = [
             column
@@ -1044,23 +1321,6 @@ class BusinessAnalyst:
                     len({str(row[column]) for row in results}),
                 ),
             )
-
-        # ------------------------------------------------------
-        # FORMATO LONGO: MÚLTIPLAS SÉRIES CATEGÓRICAS
-        # ------------------------------------------------------
-        # Cada valor da dimensão secundária recebe uma série
-        # própria, identificada por series_0, series_1 etc.
-        #
-        # Exemplo:
-        # {
-        #     "order_month": "2025-01",
-        #     "status": "Delivered",
-        #     "total_orders": 4901
-        # }
-        #
-        # A propriedade "series" informa ao frontend o nome
-        # legível e a chave de cada série.
-        # ------------------------------------------------------
 
         if series_key is not None:
             series_values = sorted({str(row[series_key]) for row in results})
@@ -1097,7 +1357,6 @@ class BusinessAnalyst:
                         },
                     )
 
-                    # Evita agregar silenciosamente registros repetidos.
                     if data_key in chart_row:
                         has_duplicate_combination = True
                         break
@@ -1105,7 +1364,6 @@ class BusinessAnalyst:
                     chart_row[data_key] = float(row[value_key])
 
                 if not has_duplicate_combination:
-                    # Mantém a ordem original das categorias.
                     grouped_data = list(grouped_rows.values())
 
                     logger.info(
@@ -1142,39 +1400,13 @@ class BusinessAnalyst:
                     },
                 )
 
-        # ------------------------------------------------------
-        # GRÁFICOS DE UMA ÚNICA SÉRIE
-        # ------------------------------------------------------
-
         label_tokens = self._tokenize(label_key)
-
         is_temporal_chart = self._is_time_column(label_key)
-
         is_ranking = self._is_ranking_question(question)
-
         is_comparison = self._is_comparison_question(question)
-
         is_distribution = self._is_distribution_question(question)
 
         is_proportion_dimension = bool(label_tokens.intersection(proportion_terms))
-
-        # ------------------------------------------------------
-        # DECISÃO DO TIPO DE GRÁFICO
-        # ------------------------------------------------------
-        #
-        # 1. Linha:
-        #    Evolução de uma métrica ao longo do tempo.
-        #
-        # 2. Barras:
-        #    Rankings, comparações e categorias gerais.
-        #
-        # 3. Pizza:
-        #    Distribuição e proporção de poucas categorias.
-        #
-        # A dimensão temporal tem prioridade sobre palavras
-        # de ranking, pois uma série histórica continua
-        # representando evolução ao longo do tempo.
-        # ------------------------------------------------------
 
         if is_temporal_chart:
             chart_type = "line"
@@ -1236,13 +1468,7 @@ class BusinessAnalyst:
         record_stage,
         run_stage,
     ) -> dict:
-        """
-        Gera e executa uma consulta independente.
-
-        Cada consulta possui seu próprio limite de correções.
-        Erros SQL são registrados individualmente e não impedem
-        a execução das próximas consultas.
-        """
+        """Gera e executa uma consulta independente."""
 
         query_id = planned_query["id"]
         objective = planned_query["objective"]
@@ -1250,8 +1476,6 @@ class BusinessAnalyst:
 
         prefix = f"query_{query_id}"
 
-        # Verifica se o banco possui a granularidade necessária
-        # antes de consumir uma chamada do provedor de LLM.
         capability_start = perf_counter()
 
         try:
@@ -1290,6 +1514,7 @@ class BusinessAnalyst:
                 "total_results": 0,
                 "chart": None,
                 "error": str(exc),
+                "sql_executed": False,
                 "metrics": {
                     "capability_validation_ms": capability_validation_ms,
                     "sql_generation_ms": 0.0,
@@ -1306,6 +1531,7 @@ class BusinessAnalyst:
 
         sql = None
         pending_error = None
+        execution_attempted = False
 
         generation_start = perf_counter()
 
@@ -1369,7 +1595,7 @@ class BusinessAnalyst:
 
                         try:
                             sql = run_stage(
-                                (f"{prefix}_sql_correction_{correction_number}"),
+                                f"{prefix}_sql_correction_{correction_number}",
                                 lambda failed_sql=failed_sql, error_message=error_message: (
                                     self.sql_generator.correct_sql(
                                         question=query_question,
@@ -1395,6 +1621,7 @@ class BusinessAnalyst:
                     self.last_sql = sql
 
                     execution_start = perf_counter()
+                    execution_attempted = True
 
                     try:
                         results = self.sql_executor.execute(sql)
@@ -1408,7 +1635,6 @@ class BusinessAnalyst:
                         pending_error = exc
 
                         self.last_sql = getattr(exc, "sql", None) or sql
-
                         sql = self.last_sql
 
                     finally:
@@ -1440,6 +1666,7 @@ class BusinessAnalyst:
                 "total_results": len(results),
                 "chart": None,
                 "error": None,
+                "sql_executed": execution_attempted,
                 "metrics": {
                     "capability_validation_ms": capability_validation_ms,
                     "sql_generation_ms": sql_generation_ms,
@@ -1473,9 +1700,16 @@ class BusinessAnalyst:
                 "total_results": 0,
                 "chart": None,
                 "error": str(exc),
+                "sql_executed": execution_attempted,
                 "metrics": {
+                    "capability_validation_ms": capability_validation_ms,
                     "sql_generation_ms": round(
                         (perf_counter() - generation_start) * 1000,
+                        2,
+                    ),
+                    "sql_correction_ms": round(correction_ms, 2),
+                    "sql_execution_ms": round(
+                        execution_elapsed * 1000,
                         2,
                     ),
                 },
@@ -1497,15 +1731,65 @@ class BusinessAnalyst:
 
         planning_start = perf_counter()
 
-        plan = run_stage(
-            "query_planning",
-            lambda: self.query_planner.plan(question),
-        )
+        if self._supports_structured_behavior():
+            planning_result = run_stage(
+                "query_planning",
+                lambda: self.query_planner.plan_with_behavior(question),
+            )
+
+        else:
+            planning_result = run_stage(
+                "query_planning",
+                lambda: self._plan_legacy_queries(question),
+            )
 
         planning_ms = round(
             (perf_counter() - planning_start) * 1000,
             2,
         )
+
+        if not isinstance(planning_result, dict):
+            raise ValueError(
+                "O planejador não retornou uma decisão comportamental válida."
+            )
+
+        planning_behavior = planning_result.get("behavior")
+
+        if not isinstance(planning_behavior, dict):
+            raise ValueError("O planejador não retornou evidências comportamentais.")
+
+        behavior_type = planning_behavior.get("type")
+
+        if behavior_type in NON_SQL_BEHAVIORS:
+            behavior = self._build_behavior(
+                behavior_type,
+                planning_behavior["reason"],
+                clarification_question=planning_behavior.get("clarification_question"),
+                limitations=planning_behavior.get("limitations", []),
+                supported_information=planning_behavior.get(
+                    "supported_information",
+                    [],
+                ),
+                sql_executed=False,
+            )
+
+            return self._build_non_sql_result(
+                question,
+                behavior,
+                analysis_mode="multi_query",
+                data_version=data_version,
+                analysis_start=analysis_start,
+                extra_metrics={
+                    "query_planning_ms": planning_ms,
+                },
+            )
+
+        if behavior_type != "answer":
+            raise ValueError(
+                f"Comportamento inesperado do planejador: {behavior_type!r}."
+            )
+
+        plan = planning_result.get("objectives")
 
         if not isinstance(plan, list) or not plan:
             raise ValueError("O planejador não retornou objetivos válidos.")
@@ -1514,6 +1798,8 @@ class BusinessAnalyst:
             raise ValueError(
                 f"O planejador excedeu o limite de {MAX_SQL_QUERIES} consultas."
             )
+
+        planning_limitations = list(planning_behavior.get("limitations", []))
 
         queries = []
 
@@ -1524,7 +1810,7 @@ class BusinessAnalyst:
                 run_stage=run_stage,
             )
 
-            if query_result["status"] == "success":
+            if query_result["status"] == "success" and query_result.get("results"):
                 query_result["chart"] = run_stage(
                     f"query_{query_result['id']}_chart_generation",
                     lambda query_result=query_result: self._build_chart_config(
@@ -1535,7 +1821,6 @@ class BusinessAnalyst:
 
             queries.append(query_result)
 
-        # Preserva os resultados de cada consulta separadamente.
         successful_queries = [
             query for query in queries if query["status"] == "success"
         ]
@@ -1549,43 +1834,206 @@ class BusinessAnalyst:
             )
         ]
 
-        # A síntese utiliza os resultados individuais.
-        response_generation_start = perf_counter()
-
-        answer = run_stage(
-            "multi_response_generation",
-            lambda: self.response_generator.generate_multi(
-                question=question,
-                queries=queries,
-            ),
-        )
-
-        response_generation_ms = round(
-            (perf_counter() - response_generation_start) * 1000,
-            2,
-        )
-
-        # Expõe limitações do schema de forma determinística.
-        # Não depende exclusivamente da interpretação do LLM.
         unsupported_queries = [
             query
             for query in queries
             if query.get("failure_type") == "unsupported_capability"
         ]
 
-        if unsupported_queries:
-            limitation_lines = [
-                f"- {query['objective']}: {query['error']}"
-                for query in unsupported_queries
-            ]
+        sql_executed = any(
+            query.get(
+                "sql_executed",
+                query["status"] == "success",
+            )
+            for query in queries
+        )
+
+        limitations = list(planning_limitations)
+
+        for query in unsupported_queries:
+            limitations.append(f"{query['objective']}: {query['error']}")
+
+        for query in failed_queries:
+            limitations.append(
+                f"{query['objective']}: falha na execução da consulta. "
+                f"{query.get('error') or 'Erro não especificado.'}"
+            )
+
+        limitations = list(dict.fromkeys(limitations))
+
+        # ------------------------------------------------------
+        # NENHUMA CONSULTA FOI CONCLUÍDA
+        # ------------------------------------------------------
+
+        if not successful_queries:
+            if not limitations:
+                limitations.append("Nenhum objetivo da análise pôde ser concluído.")
+
+            reason = (
+                "Não foi possível produzir uma resposta sustentada "
+                "pelas consultas planejadas."
+            )
+
+            if sql_executed:
+                reason += (
+                    " Houve tentativas de execução SQL, mas nenhuma "
+                    "consulta foi concluída com sucesso."
+                )
+
+            else:
+                reason += (
+                    " Os objetivos foram considerados incompatíveis "
+                    "com as capacidades dos dados disponíveis."
+                )
+
+            behavior = self._build_behavior(
+                "abstain",
+                reason,
+                limitations=limitations,
+                sql_executed=sql_executed,
+            )
+
+            total_time = round(
+                (perf_counter() - analysis_start) * 1000,
+                2,
+            )
+
+            result = {
+                "question": question,
+                "sql": None,
+                "results": [],
+                "total_results": 0,
+                "answer": self._build_behavior_answer(behavior),
+                "answer_evidence": [],
+                "chart": None,
+                "queries": queries,
+                "query_count": len(queries),
+                "successful_queries": 0,
+                "failed_queries": len(failed_queries),
+                "unsupported_queries": len(unsupported_queries),
+                "partial_success": False,
+                "analysis_mode": "multi_query",
+                "provider": self.provider_name,
+                "model": self.model,
+                "cache_hit": False,
+                "behavior": behavior,
+                "steps": self.steps,
+                "metrics": {
+                    "total_time_ms": total_time,
+                    "query_planning_ms": planning_ms,
+                    "sql_generation_ms": sum(
+                        query.get("metrics", {}).get(
+                            "sql_generation_ms",
+                            0,
+                        )
+                        for query in queries
+                    ),
+                    "sql_execution_ms": sum(
+                        query.get("metrics", {}).get(
+                            "sql_execution_ms",
+                            0,
+                        )
+                        for query in queries
+                    ),
+                    "response_generation_ms": 0.0,
+                    "query_count": len(queries),
+                    "successful_queries": 0,
+                    "failed_queries": len(failed_queries),
+                    "unsupported_queries": len(unsupported_queries),
+                    "cache_hit": False,
+                },
+            }
+
+            self.cache.set(
+                question=question,
+                data_version=data_version,
+                result=result,
+                provider=self.provider_name,
+                model=self.model,
+            )
+
+            return result
+
+        # ------------------------------------------------------
+        # SÍNTESE DOS RESULTADOS COM EVIDÊNCIAS
+        # ------------------------------------------------------
+
+        response_generation_start = perf_counter()
+
+        generated_response = run_stage(
+            "multi_response_generation",
+            lambda: self._generate_multi_answer(
+                question=question,
+                queries=queries,
+            ),
+        )
+
+        answer = generated_response["answer"]
+        answer_evidence = generated_response["answer_evidence"]
+
+        response_generation_ms = round(
+            (perf_counter() - response_generation_start) * 1000,
+            2,
+        )
+
+        # Acrescenta somente limitações relacionadas à disponibilidade
+        # dos dados. Falhas operacionais de execução permanecem
+        # registradas nas evidências e no histórico.
+        display_limitations = list(planning_limitations)
+
+        display_limitations.extend(
+            f"{query['objective']}: {query['error']}" for query in unsupported_queries
+        )
+
+        display_limitations = list(dict.fromkeys(display_limitations))
+
+        if display_limitations:
+            limitation_lines = [f"- {limitation}" for limitation in display_limitations]
 
             answer = f"{answer.rstrip()}\n\nLimitações dos dados:\n" + "\n".join(
                 limitation_lines
             )
 
-        # Compatibilidade com o contrato antigo:
-        # os campos singulares representam a primeira consulta bem-sucedida.
-        primary_query = successful_queries[0] if successful_queries else queries[0]
+        # ------------------------------------------------------
+        # CLASSIFICAÇÃO DETERMINÍSTICA DO RESULTADO
+        # ------------------------------------------------------
+
+        has_partial_result = bool(
+            failed_queries or unsupported_queries or planning_limitations
+        )
+
+        supported_information = [
+            (
+                f"{query['objective']}: consulta concluída "
+                f"com {query['total_results']} registro(s) retornado(s)."
+            )
+            for query in successful_queries
+        ]
+
+        if has_partial_result:
+            behavior = self._build_behavior(
+                "partial_answer",
+                (
+                    f"{len(successful_queries)} de {len(queries)} "
+                    "objetivo(s) foram concluídos com sucesso. "
+                    "A resposta foi limitada pelas consultas que "
+                    "não puderam ser concluídas."
+                ),
+                limitations=limitations,
+                supported_information=supported_information,
+                sql_executed=sql_executed,
+            )
+
+        else:
+            behavior = self._build_behavior(
+                "answer",
+                planning_behavior["reason"],
+                limitations=[],
+                supported_information=supported_information,
+                sql_executed=sql_executed,
+            )
+
+        primary_query = successful_queries[0]
 
         sql_generation_ms = round(
             sum(
@@ -1616,7 +2064,6 @@ class BusinessAnalyst:
 
         analysis_result = {
             "question": question,
-            # Contrato legado: consulta principal.
             "sql": primary_query.get("sql"),
             "results": primary_query.get("results", []),
             "total_results": primary_query.get(
@@ -1624,21 +2071,19 @@ class BusinessAnalyst:
                 0,
             ),
             "answer": answer,
+            "answer_evidence": answer_evidence,
             "chart": primary_query.get("chart"),
-            # Novo contrato: resultados independentes.
             "queries": queries,
             "query_count": len(queries),
             "successful_queries": len(successful_queries),
             "failed_queries": len(failed_queries),
             "unsupported_queries": len(unsupported_queries),
-            "partial_success": (
-                len(successful_queries) > 0
-                and (len(failed_queries) > 0 or len(unsupported_queries) > 0)
-            ),
+            "partial_success": has_partial_result,
             "analysis_mode": "multi_query",
             "provider": self.provider_name,
             "model": self.model,
             "cache_hit": False,
+            "behavior": behavior,
             "steps": self.steps,
             "metrics": {
                 "total_time_ms": total_time,
@@ -1668,10 +2113,12 @@ class BusinessAnalyst:
                 "event": "multi_analysis_completed",
                 "provider": self.provider_name,
                 "model": self.model,
+                "behavior": behavior["type"],
                 "query_count": len(queries),
                 "successful_queries": len(successful_queries),
                 "failed_queries": len(failed_queries),
                 "unsupported_queries": len(unsupported_queries),
+                "answer_evidence_count": len(answer_evidence),
                 "total_time_ms": total_time,
             },
         )
@@ -1683,7 +2130,7 @@ class BusinessAnalyst:
     # ==========================================================
 
     def analyze(self, question: str) -> dict:
-        """Gera SQL, executa consultas e interpreta os resultados."""
+        """Decide o comportamento, executa SQL e interpreta resultados."""
 
         self.steps = []
         self.last_sql = None
@@ -1738,7 +2185,11 @@ class BusinessAnalyst:
                     2,
                 )
 
-                record_stage(name, "failed", duration_ms)
+                record_stage(
+                    name,
+                    "failed",
+                    duration_ms,
+                )
                 raise
 
             duration_ms = round(
@@ -1746,7 +2197,11 @@ class BusinessAnalyst:
                 2,
             )
 
-            record_stage(name, "completed", duration_ms)
+            record_stage(
+                name,
+                "completed",
+                duration_ms,
+            )
 
             return result
 
@@ -1769,7 +2224,6 @@ class BusinessAnalyst:
             )
 
             if cached_result is not None:
-                # Recupera gráficos de análises compostas antigas.
                 cached_queries = cached_result.get("queries", [])
 
                 if cached_queries:
@@ -1780,7 +2234,7 @@ class BusinessAnalyst:
                             and query.get("results")
                         ):
                             query["chart"] = run_stage(
-                                (f"query_{query['id']}_chart_generation"),
+                                f"query_{query['id']}_chart_generation",
                                 lambda query=query: self._build_chart_config(
                                     query["results"],
                                     question=query["question"],
@@ -1820,6 +2274,31 @@ class BusinessAnalyst:
                             model=self.model,
                         )
 
+                # Compatibilidade com resultados antigos do cache.
+                if not isinstance(cached_result.get("behavior"), dict):
+                    cached_sql_executed = bool(
+                        cached_result.get("sql")
+                        or any(
+                            query.get("status") == "success" for query in cached_queries
+                        )
+                    )
+
+                    cached_result["behavior"] = self._build_behavior(
+                        "answer",
+                        "Análise recuperada de um resultado previamente armazenado.",
+                        supported_information=[
+                            (
+                                "A análise foi executada anteriormente "
+                                "e recuperada do cache."
+                            )
+                        ],
+                        sql_executed=cached_sql_executed,
+                    )
+
+                # Compatibilidade com entradas antigas do cache que
+                # ainda não armazenavam evidências das respostas.
+                cached_result.setdefault("answer_evidence", [])
+
                 cached_result["cache_hit"] = True
                 cached_result["provider"] = self.provider_name
                 cached_result["model"] = self.model
@@ -1837,12 +2316,7 @@ class BusinessAnalyst:
                 )
 
                 cached_result["steps"] = steps
-
-                cached_result.setdefault(
-                    "metrics",
-                    {},
-                )
-
+                cached_result.setdefault("metrics", {})
                 cached_result["metrics"]["total_time_ms"] = total_time
                 cached_result["metrics"]["cache_hit"] = True
 
@@ -1874,35 +2348,178 @@ class BusinessAnalyst:
                 )
 
             # ==================================================
-            # FLUXO LEGADO: UMA ÚNICA CONSULTA
+            # FLUXO DE PERGUNTA SIMPLES
             # ==================================================
 
-            # 5. Gerar SQL.
+            # 5. Verificar capacidade conhecida antes de gerar SQL.
+            capability_start = perf_counter()
+
+            try:
+                run_stage(
+                    "capability_validation",
+                    lambda: validate_analysis_capability(
+                        objective=question,
+                        question=question,
+                    ),
+                )
+
+            except UnsupportedAnalysisError as exc:
+                capability_validation_ms = round(
+                    (perf_counter() - capability_start) * 1000,
+                    2,
+                )
+
+                behavior = self._build_behavior(
+                    "abstain",
+                    (
+                        "A solicitação não pode ser respondida "
+                        "com a granularidade disponível no schema."
+                    ),
+                    limitations=[str(exc)],
+                    sql_executed=False,
+                )
+
+                return self._build_non_sql_result(
+                    question,
+                    behavior,
+                    analysis_mode="single_query",
+                    data_version=data_version,
+                    analysis_start=analysis_start,
+                    extra_metrics={
+                        "capability_validation_ms": capability_validation_ms,
+                    },
+                )
+
+            capability_validation_ms = round(
+                (perf_counter() - capability_start) * 1000,
+                2,
+            )
+
+            # 6. Decidir comportamento e gerar SQL quando necessário.
             sql_generation_start = perf_counter()
             pending_error = None
             sql = None
 
             try:
-                sql = run_stage(
-                    "sql_generation",
-                    lambda: self.sql_generator.generate(question),
+                if self._supports_structured_behavior():
+                    generation_result = run_stage(
+                        "behavior_and_sql_generation",
+                        lambda: self.sql_generator.generate_with_behavior(question),
+                    )
+
+                else:
+                    generation_result = run_stage(
+                        "sql_generation",
+                        lambda: self._generate_legacy_sql(question),
+                    )
+
+                if not isinstance(generation_result, dict):
+                    raise ValueError("O SQLGenerator não retornou uma decisão válida.")
+
+                behavior_data = generation_result.get("behavior")
+
+                if not isinstance(behavior_data, dict):
+                    raise ValueError(
+                        "O SQLGenerator não retornou evidências comportamentais."
+                    )
+
+                behavior_type = behavior_data.get("type")
+
+                if behavior_type in NON_SQL_BEHAVIORS:
+                    behavior = self._build_behavior(
+                        behavior_type,
+                        behavior_data["reason"],
+                        clarification_question=behavior_data.get(
+                            "clarification_question"
+                        ),
+                        limitations=behavior_data.get("limitations", []),
+                        supported_information=behavior_data.get(
+                            "supported_information",
+                            [],
+                        ),
+                        sql_executed=False,
+                    )
+
+                    behavior_decision_ms = round(
+                        (perf_counter() - sql_generation_start) * 1000,
+                        2,
+                    )
+
+                    return self._build_non_sql_result(
+                        question,
+                        behavior,
+                        analysis_mode="single_query",
+                        data_version=data_version,
+                        analysis_start=analysis_start,
+                        extra_metrics={
+                            "capability_validation_ms": capability_validation_ms,
+                            "behavior_decision_ms": behavior_decision_ms,
+                        },
+                    )
+
+                if behavior_type != "answer":
+                    raise ValueError(
+                        f"Comportamento inesperado do SQLGenerator: {behavior_type!r}."
+                    )
+
+                behavior = self._build_behavior(
+                    "answer",
+                    behavior_data["reason"],
+                    clarification_question=None,
+                    limitations=behavior_data.get("limitations", []),
+                    supported_information=behavior_data.get(
+                        "supported_information",
+                        [],
+                    ),
+                    sql_executed=False,
                 )
+
+                sql = generation_result.get("sql")
+
+                if not isinstance(sql, str) or not sql.strip():
+                    raise ValueError(
+                        "Uma decisão answer precisa apresentar SQL válido."
+                    )
 
                 self.last_sql = sql
 
             except SQLSyntaxError as exc:
+                # A geração pode falhar por sintaxe antes de existir
+                # uma consulta executável. O erro deve entrar no mesmo
+                # mecanismo de correção utilizado nos erros do DuckDB.
                 pending_error = exc
-                sql = exc.sql
+                sql = getattr(exc, "sql", None)
                 self.last_sql = sql
+
+                behavior = self._build_behavior(
+                    "answer",
+                    (
+                        "A pergunta foi considerada respondível; "
+                        "a consulta SQL precisou passar pelo processo "
+                        "de recuperação."
+                    ),
+                    sql_executed=False,
+                )
+
+                logger.warning(
+                    "Erro de sintaxe durante a geração inicial de SQL.",
+                    extra={
+                        "event": "initial_sql_generation_error",
+                        "provider": self.provider_name,
+                        "model": self.model,
+                        "error_type": type(exc).__name__,
+                    },
+                )
 
             sql_generation_ms = round(
                 (perf_counter() - sql_generation_start) * 1000,
                 2,
             )
 
-            # 6. Executar SQL com correções limitadas.
+            # 7. Executar SQL com correções limitadas.
             sql_execution_elapsed = 0.0
             correction_count = 0
+            execution_attempted = False
 
             self.sql_executor.set_stage_callback(record_stage)
 
@@ -1952,7 +2569,7 @@ class BusinessAnalyst:
 
                         except SQLSyntaxError as exc:
                             pending_error = exc
-                            sql = exc.sql
+                            sql = getattr(exc, "sql", None)
                             self.last_sql = sql
 
                             continue
@@ -1962,6 +2579,7 @@ class BusinessAnalyst:
                     self.last_sql = sql
 
                     execution_start = perf_counter()
+                    execution_attempted = True
 
                     try:
                         results = self.sql_executor.execute(sql)
@@ -1975,7 +2593,6 @@ class BusinessAnalyst:
                         pending_error = exc
 
                         self.last_sql = getattr(exc, "sql", None) or sql
-
                         sql = self.last_sql
 
                     finally:
@@ -1989,24 +2606,27 @@ class BusinessAnalyst:
                 2,
             )
 
-            # 7. Interpretar resultados.
+            # 8. Interpretar resultados e produzir evidências.
             response_generation_start = perf_counter()
 
-            answer = run_stage(
+            generated_response = run_stage(
                 "response_generation",
-                lambda: self.response_generator.generate(
+                lambda: self._generate_single_answer(
                     question=question,
                     sql=sql,
                     results=results,
                 ),
             )
 
+            answer = generated_response["answer"]
+            answer_evidence = generated_response["answer_evidence"]
+
             response_generation_ms = round(
                 (perf_counter() - response_generation_start) * 1000,
                 2,
             )
 
-            # 8. Gerar gráfico.
+            # 9. Gerar gráfico.
             chart = run_stage(
                 "chart_generation",
                 lambda: self._build_chart_config(
@@ -2015,19 +2635,29 @@ class BusinessAnalyst:
                 ),
             )
 
-            # 9. Métricas.
+            # 10. Registrar evidências após execução real.
+            behavior["sql_executed"] = execution_attempted
+            behavior["supported_information"] = [
+                (
+                    "Consulta SQL executada com sucesso; "
+                    f"{len(results)} registro(s) retornado(s)."
+                )
+            ]
+
+            # 11. Métricas.
             total_time = round(
                 (perf_counter() - analysis_start) * 1000,
                 2,
             )
 
-            # 10. Montar resultado mantendo contrato legado.
+            # 12. Montar resultado mantendo contrato legado.
             analysis_result = {
                 "question": question,
                 "sql": sql,
                 "results": results,
                 "total_results": len(results),
                 "answer": answer,
+                "answer_evidence": answer_evidence,
                 "chart": chart,
                 "queries": [],
                 "query_count": 1,
@@ -2039,9 +2669,11 @@ class BusinessAnalyst:
                 "provider": self.provider_name,
                 "model": self.model,
                 "cache_hit": False,
+                "behavior": behavior,
                 "steps": steps,
                 "metrics": {
                     "total_time_ms": total_time,
+                    "capability_validation_ms": capability_validation_ms,
                     "sql_generation_ms": sql_generation_ms,
                     "sql_execution_ms": sql_execution_ms,
                     "response_generation_ms": response_generation_ms,
@@ -2052,7 +2684,7 @@ class BusinessAnalyst:
                 },
             }
 
-            # 11. Armazenar no cache.
+            # 13. Armazenar no cache, incluindo as evidências.
             current_stage = "cache_storage"
 
             self.cache.set(
@@ -2069,6 +2701,8 @@ class BusinessAnalyst:
                     "event": "analysis_completed",
                     "provider": self.provider_name,
                     "model": self.model,
+                    "behavior": behavior["type"],
+                    "answer_evidence_count": len(answer_evidence),
                     "total_time_ms": total_time,
                     "sql_generation_ms": sql_generation_ms,
                     "sql_execution_ms": sql_execution_ms,

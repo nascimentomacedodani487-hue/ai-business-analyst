@@ -17,7 +17,7 @@ import logging
 import sys
 from collections.abc import Mapping
 from datetime import date, datetime, time
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Sequence
@@ -95,6 +95,9 @@ def build_parser() -> argparse.ArgumentParser:
             "--output reports/openai.json\n"
             "  ai-evaluation --benchmark gemini openai anthropic "
             "--allow-llm --output reports/benchmark.json\n"
+            "  ai-evaluation --benchmark gemini openai anthropic "
+            "--repetitions 3 --allow-llm "
+            "--output reports/benchmark.json\n"
             "  ai-evaluation --list-benchmarks\n"
             "  ai-evaluation --list-benchmarks "
             "--filter-provider gemini --limit 10\n"
@@ -116,7 +119,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--validate-only",
         action="store_true",
         help=(
-            "Executa apenas os SQLs de referência e os guardrails. "
+            "Executa apenas os SQLs de referência dos cenários SQL "
+            "e os guardrails. Cenários comportamentais são excluídos. "
             "Não utiliza provedores de IA."
         ),
     )
@@ -171,6 +175,17 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Provedor de IA utilizado na avaliação individual. "
             "Não é utilizado quando --benchmark é informado."
+        ),
+    )
+
+    parser.add_argument(
+        "--repetitions",
+        type=positive_int,
+        default=1,
+        metavar="N",
+        help=(
+            "Quantidade de repetições por provedor no benchmark comparativo. "
+            "Utilizado exclusivamente com --benchmark."
         ),
     )
 
@@ -308,9 +323,7 @@ def select_cases(
         return cases
 
     available_ids = {case.case_id for case in cases}
-
     requested_set = set(requested_ids)
-
     unknown_ids = sorted(requested_set - available_ids)
 
     if unknown_ids:
@@ -335,15 +348,25 @@ def list_cases(cases: list) -> None:
     print("AI BUSINESS ANALYST — EVALUATION DATASET")
     print("=" * 72)
 
+    sql_count = sum(case.evaluation_type == "sql_result" for case in cases)
+
+    behavioral_count = len(cases) - sql_count
+
     print(f"Total de cenários: {len(cases)}")
+    print(f"Cenários SQL: {sql_count}")
+    print(f"Cenários comportamentais: {behavioral_count}")
     print()
 
     for index, case in enumerate(cases, start=1):
         print(f"{index:02d}. {case.case_id}")
-
         print(f"    Categoria: {case.category}")
+        print(f"    Tipo de avaliação: {case.evaluation_type}")
 
-        print(f"    Comparação: {case.comparison_mode}")
+        if case.expected_behavior is not None:
+            print(f"    Comportamento esperado: {case.expected_behavior}")
+
+        if case.evaluation_type == "sql_result":
+            print(f"    Comparação: {case.comparison_mode}")
 
         if case.expected_analysis_mode is not None:
             print(f"    Modo esperado: {case.expected_analysis_mode}")
@@ -466,16 +489,13 @@ def print_benchmark_history(
         print(f"Filtro de modelo: {model}")
 
     print(f"Registros encontrados: {total}")
-
     print(f"Registros exibidos: {len(entries)}")
-
     print(f"Paginação: offset={offset}, limit={limit}")
 
     if not entries:
         print()
         print("Nenhum benchmark encontrado no histórico.")
         print()
-
         return
 
     print()
@@ -491,15 +511,8 @@ def print_benchmark_history(
         if not isinstance(summary, Mapping):
             summary = {}
 
-        benchmark_id = entry.get(
-            "benchmark_id",
-            "N/D",
-        )
-
-        created_at = entry.get(
-            "created_at",
-            "N/D",
-        )
+        benchmark_id = entry.get("benchmark_id", "N/D")
+        created_at = entry.get("created_at", "N/D")
 
         dataset_case_count = dataset.get(
             "case_count",
@@ -511,13 +524,8 @@ def print_benchmark_history(
             entry.get("dataset_sha256", entry.get("sha256", "N/D")),
         )
 
-        providers = _format_history_list(
-            entry.get("providers"),
-        )
-
-        models = _format_history_list(
-            entry.get("models"),
-        )
+        providers = _format_history_list(entry.get("providers"))
+        models = _format_history_list(entry.get("models"))
 
         provider_count = summary.get(
             "provider_count",
@@ -535,13 +543,9 @@ def print_benchmark_history(
         )
 
         print(f"{index:03d}. {benchmark_id}")
-
         print(f"     Criado em: {created_at}")
-
         print(f"     Cenários: {dataset_case_count}")
-
         print(f"     Provedores: {providers}")
-
         print(f"     Modelos: {models}")
 
         print(
@@ -551,7 +555,6 @@ def print_benchmark_history(
         )
 
         print(f"     Dataset SHA-256: {dataset_sha256}")
-
         print("-" * 88)
 
     print()
@@ -575,7 +578,6 @@ def list_benchmark_history(
 
     if isinstance(result, Mapping):
         entries = result.get("items")
-
         pagination = result.get("pagination")
 
         if not isinstance(entries, list):
@@ -672,14 +674,7 @@ def execute_benchmark_comparison(
     baseline_id: str,
     candidate_id: str,
 ) -> dict[str, Any]:
-    """Recupera e compara dois benchmarks históricos.
-
-    Não executa provedores de IA. Utiliza exclusivamente os relatórios
-    já persistidos no histórico SQLite.
-
-    Raises:
-        ValueError: quando algum benchmark não existe.
-    """
+    """Recupera e compara dois benchmarks históricos."""
 
     if not isinstance(baseline_id, str) or not baseline_id.strip():
         raise ValueError("O identificador do benchmark baseline é inválido.")
@@ -713,11 +708,7 @@ def execute_benchmark_comparison(
 def benchmark_comparison_exit_code(
     payload: Any,
 ) -> int:
-    """Determina o código de saída de uma comparação histórica.
-
-    Comparações estáveis ou com melhoria retornam sucesso.
-    Regressões, resultados mistos e incompatibilidades retornam falha.
-    """
+    """Determina o código de saída de uma comparação histórica."""
 
     if not isinstance(payload, Mapping):
         return EXIT_FAILURE
@@ -822,13 +813,9 @@ def print_benchmark_comparison_report(
     print("=" * 88)
 
     print(f"Baseline: {baseline.get('benchmark_id', 'N/D')}")
-
     print(f"Candidate: {candidate.get('benchmark_id', 'N/D')}")
-
     print(f"Dataset SHA-256: {baseline.get('dataset_sha256', 'N/D')}")
-
     print(f"Cenários: {baseline.get('dataset_case_count', 'N/D')}")
-
     print()
 
     status = str(summary.get("status", "not_comparable")).upper()
@@ -842,9 +829,7 @@ def print_benchmark_comparison_report(
     )
 
     print(f"Regressões: {summary.get('regressions', 0)}")
-
     print(f"Melhorias: {summary.get('improvements', 0)}")
-
     print(f"Métricas estáveis: {summary.get('stable_metrics', 0)}")
 
     print(f"Métricas não comparáveis: {summary.get('not_comparable_metrics', 0)}")
@@ -909,7 +894,10 @@ def print_benchmark_comparison_report(
             if not isinstance(metric, Mapping):
                 continue
 
-            metric_status = metric.get("status", "not_comparable")
+            metric_status = metric.get(
+                "status",
+                "not_comparable",
+            )
 
             baseline_value = _format_comparison_value(
                 metric.get("baseline"),
@@ -922,15 +910,12 @@ def print_benchmark_comparison_report(
             )
 
             delta = metric.get("delta")
-
             delta_pct = metric.get("delta_pct")
 
             if delta is None:
                 difference_text = "variação: N/D"
-
             elif delta_pct is None:
                 difference_text = f"variação: {delta}"
-
             else:
                 difference_text = f"variação: {delta} ({delta_pct:+.2f}%)"
 
@@ -956,16 +941,32 @@ def validate_reference_cases(
     cases: list,
     executor: SQLExecutor | None = None,
 ) -> dict[str, Any]:
-    """Valida os SQLs de referência sem executar modelos de IA."""
+    """Valida somente os SQLs de referência dos cenários SQL."""
+
+    all_cases = list(cases)
+
+    sql_cases = [case for case in all_cases if case.evaluation_type == "sql_result"]
+
+    behavioral_cases = [
+        case for case in all_cases if case.evaluation_type != "sql_result"
+    ]
 
     reference_executor = executor if executor is not None else SQLExecutor()
 
     results = []
 
-    for index, case in enumerate(cases, start=1):
+    for index, case in enumerate(sql_cases, start=1):
         start = perf_counter()
 
         try:
+            if (
+                not isinstance(case.reference_sql, str)
+                or not case.reference_sql.strip()
+            ):
+                raise ValueError(
+                    f"O cenário SQL '{case.case_id}' não possui SQL de referência."
+                )
+
             rows = reference_executor.execute(case.reference_sql)
 
             if not isinstance(rows, list):
@@ -1001,6 +1002,7 @@ def validate_reference_cases(
             result = {
                 "case_id": case.case_id,
                 "category": case.category,
+                "evaluation_type": case.evaluation_type,
                 "status": "passed",
                 "row_count": len(rows),
                 "columns": sorted(columns),
@@ -1028,6 +1030,7 @@ def validate_reference_cases(
             result = {
                 "case_id": case.case_id,
                 "category": case.category,
+                "evaluation_type": case.evaluation_type,
                 "status": "error",
                 "row_count": None,
                 "columns": [],
@@ -1053,13 +1056,29 @@ def validate_reference_cases(
 
     errors = sum(result["status"] == "error" for result in results)
 
+    excluded_behavioral_cases = [
+        {
+            "case_id": case.case_id,
+            "evaluation_type": case.evaluation_type,
+            "expected_behavior": case.expected_behavior,
+            "reason": ("Cenário comportamental não possui SQL de referência."),
+        }
+        for case in behavioral_cases
+    ]
+
     return {
         "mode": "reference_validation",
         "database": "DuckDB",
+        "dataset": {
+            "total_cases": len(all_cases),
+            "sql_scenario_count": len(sql_cases),
+            "behavioral_scenario_count": len(behavioral_cases),
+        },
         "summary": {
             "total_cases": len(results),
             "passed_cases": passed,
             "error_cases": errors,
+            "behavioral_cases_excluded": len(behavioral_cases),
             "pass_rate": round(
                 passed / len(results) * 100,
                 2,
@@ -1067,6 +1086,7 @@ def validate_reference_cases(
             if results
             else 0.0,
         },
+        "excluded_behavioral_cases": excluded_behavioral_cases,
         "results": results,
     }
 
@@ -1077,18 +1097,42 @@ def print_validation_report(
     """Exibe o resultado da validação dos SQLs."""
 
     summary = payload["summary"]
+    dataset = payload.get("dataset", {})
 
     print()
     print("AI EVALUATION ENGINE — VALIDAÇÃO DE REFERÊNCIAS")
     print("=" * 64)
 
-    print(f"Cenários: {summary['total_cases']}")
-
+    print(f"SQLs de referência: {summary['total_cases']}")
     print(f"Aprovados: {summary['passed_cases']}")
-
     print(f"Erros: {summary['error_cases']}")
 
+    print(
+        "Cenários comportamentais excluídos: "
+        f"{summary.get('behavioral_cases_excluded', 0)}"
+    )
+
+    if isinstance(dataset, Mapping):
+        print(f"Total de cenários no dataset: {dataset.get('total_cases', 'N/D')}")
+
     print(f"Taxa de validação: {summary['pass_rate']:.2f}%")
+
+    excluded_cases = payload.get(
+        "excluded_behavioral_cases",
+        [],
+    )
+
+    if excluded_cases:
+        print()
+        print("CENÁRIOS COMPORTAMENTAIS NÃO APLICÁVEIS À VALIDAÇÃO SQL")
+        print("-" * 64)
+
+        for case in excluded_cases:
+            print(
+                f"  [EXCLUÍDO] {case['case_id']} "
+                f"| Comportamento esperado: "
+                f"{case['expected_behavior']}"
+            )
 
     print()
     print("-" * 64)
@@ -1097,9 +1141,7 @@ def print_validation_report(
         status = result["status"].upper()
 
         print(f"[{status}] {result['case_id']}")
-
         print(f"  Registros: {result['row_count']}")
-
         print(f"  Duração: {result['duration_ms']:.2f} ms")
 
         if result["error"]:
@@ -1138,41 +1180,45 @@ def print_evaluation_report(
     """Exibe um resumo legível da avaliação."""
 
     summary = payload["summary"]
+    metadata = payload.get("metadata", {})
+
+    if not isinstance(metadata, Mapping):
+        metadata = {}
 
     print()
     print("AI BUSINESS ANALYST — EVALUATION REPORT")
     print("=" * 72)
 
     print(f"Run ID: {payload['run_id']}")
-
     print(f"Provedor: {payload['provider']}")
-
     print(f"Modelo: {payload['model'] or 'Não informado'}")
 
+    if "sql_scenario_count" in metadata:
+        print(f"Cenários SQL: {metadata['sql_scenario_count']}")
+
+    if "behavioral_scenario_count" in metadata:
+        print(f"Cenários comportamentais: {metadata['behavioral_scenario_count']}")
+
     print()
-
     print(f"Total de cenários: {summary['total_cases']}")
-
     print(f"Aprovados: {summary['passed_cases']}")
-
     print(f"Reprovados: {summary['failed_cases']}")
-
     print(f"Erros: {summary['error_cases']}")
-
     print(f"Ignorados: {summary['skipped_cases']}")
-
     print(f"Taxa de aprovação: {summary['pass_rate']:.2f}%")
-
     print(f"Duração total: {summary['duration_ms']:.2f} ms")
 
-    metrics = payload.get("metadata", {}).get(
+    metrics = metadata.get(
         "metrics",
         {},
     )
 
+    if not isinstance(metrics, Mapping):
+        metrics = {}
+
     metric_summary = metrics.get("summary", {})
 
-    if metric_summary:
+    if isinstance(metric_summary, Mapping) and metric_summary:
         print()
 
         print(f"Score médio: {metric_summary.get('average_score', 0.0):.4f}")
@@ -1202,10 +1248,28 @@ def print_evaluation_report(
 
     for result in payload.get("results", []):
         status = result["status"].upper()
-
         score = result.get("score", 0.0)
 
         print(f"[{status}] {result['case_id']} | Score: {score:.4f}")
+
+        result_metadata = result.get("metadata", {})
+
+        if not isinstance(result_metadata, Mapping):
+            result_metadata = {}
+
+        evaluation_type = result_metadata.get("evaluation_type")
+
+        if evaluation_type:
+            print(f"  Tipo de avaliação: {evaluation_type}")
+
+        expected_behavior = result_metadata.get("expected_behavior")
+        observed_behavior = result_metadata.get("observed_behavior")
+
+        if expected_behavior is not None:
+            print(f"  Comportamento esperado: {expected_behavior}")
+
+        if observed_behavior is not None:
+            print(f"  Comportamento observado: {observed_behavior}")
 
         if result.get("error"):
             print(f"  Erro: {result['error']}")
@@ -1226,20 +1290,33 @@ def execute_benchmark(
     providers: Sequence[str],
     dataset_path: Path | None = None,
     history_store: BenchmarkHistory | None = None,
+    repetitions: int = 1,
 ) -> dict[str, Any]:
     """Executa o BenchmarkRunner com persistência histórica."""
 
     from ai_analyst.evaluation.benchmark import BenchmarkRunner
 
+    if (
+        not isinstance(repetitions, int)
+        or isinstance(repetitions, bool)
+        or repetitions <= 0
+    ):
+        raise ValueError("repetitions deve ser um inteiro maior que zero.")
+
     effective_history_store = (
         history_store if history_store is not None else BenchmarkHistory()
     )
 
-    benchmark = BenchmarkRunner(
-        providers=providers,
-        dataset_path=dataset_path,
-        history_store=effective_history_store,
-    )
+    runner_arguments = {
+        "providers": providers,
+        "dataset_path": dataset_path,
+        "history_store": effective_history_store,
+    }
+
+    if repetitions != 1:
+        runner_arguments["repetitions"] = repetitions
+
+    benchmark = BenchmarkRunner(**runner_arguments)
 
     return benchmark.run(
         cases=cases,
@@ -1251,9 +1328,7 @@ def execute_benchmark(
 # ==========================================================
 
 
-def _format_percentage(
-    value: Any,
-) -> str:
+def _format_percentage(value: Any) -> str:
     """Formata uma porcentagem ou informa indisponibilidade."""
 
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -1262,9 +1337,7 @@ def _format_percentage(
     return f"{value:.2f}%"
 
 
-def _format_score(
-    value: Any,
-) -> str:
+def _format_score(value: Any) -> str:
     """Formata um score numérico."""
 
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -1273,9 +1346,7 @@ def _format_score(
     return f"{value:.4f}"
 
 
-def _format_duration(
-    value: Any,
-) -> str:
+def _format_duration(value: Any) -> str:
     """Formata uma duração em milissegundos."""
 
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -1284,38 +1355,564 @@ def _format_duration(
     return f"{value:.2f} ms"
 
 
+def _format_usd(value: Any) -> str:
+    """Formata um valor monetário em dólares."""
+
+    if value is None or isinstance(value, bool):
+        return "N/D"
+
+    try:
+        amount = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return "N/D"
+
+    if not amount.is_finite() or amount < 0:
+        return "N/D"
+
+    return f"US$ {amount:,.6f}"
+
+
+def _get_token_cost_estimate(
+    metrics: Mapping[str, Any],
+) -> Mapping[str, Any] | None:
+    """Localiza a estimativa de custo em estruturas de métricas."""
+
+    direct_estimate = metrics.get("token_cost_estimate")
+
+    if isinstance(direct_estimate, Mapping):
+        return direct_estimate
+
+    for key in (
+        "llm_usage",
+        "llm_metrics",
+        "usage",
+    ):
+        nested = metrics.get(key)
+
+        if not isinstance(nested, Mapping):
+            continue
+
+        estimate = nested.get("token_cost_estimate")
+
+        if isinstance(estimate, Mapping):
+            return estimate
+
+    metadata = metrics.get("metadata")
+
+    if isinstance(metadata, Mapping):
+        nested_metrics = metadata.get("metrics")
+
+        if isinstance(nested_metrics, Mapping):
+            return _get_token_cost_estimate(nested_metrics)
+
+    return None
+
+
+def _get_provider_report_metrics(
+    metrics: Mapping[str, Any],
+    provider_run: Mapping[str, Any] | None = None,
+) -> Mapping[str, Any]:
+    """Recupera métricas do relatório representativo quando necessário."""
+
+    if _get_token_cost_estimate(metrics) is not None:
+        return metrics
+
+    if not isinstance(provider_run, Mapping):
+        return metrics
+
+    report = provider_run.get("report")
+
+    if not isinstance(report, Mapping):
+        return metrics
+
+    metadata = report.get("metadata")
+
+    if isinstance(metadata, Mapping):
+        report_metrics = metadata.get("metrics")
+
+        if isinstance(report_metrics, Mapping):
+            return report_metrics
+
+    report_metrics = report.get("metrics")
+
+    if isinstance(report_metrics, Mapping):
+        return report_metrics
+
+    return metrics
+
+
+def _print_provider_cost(
+    metrics: Mapping[str, Any],
+    provider_run: Mapping[str, Any] | None = None,
+) -> None:
+    """Exibe estimativa de custo sem confundi-la com cobrança real."""
+
+    effective_metrics = _get_provider_report_metrics(
+        metrics,
+        provider_run,
+    )
+
+    estimate = _get_token_cost_estimate(effective_metrics)
+
+    if estimate is None:
+        legacy_cost = effective_metrics.get("cost_estimate_usd")
+
+        if legacy_cost is not None:
+            print(f"  Custo estimado: {_format_usd(legacy_cost)}")
+        else:
+            print("  Custo estimado: N/D")
+
+        return
+
+    estimated_cost = estimate.get("estimated_cost_usd")
+    known_subtotal = estimate.get("known_subtotal_usd")
+
+    if estimated_cost is not None:
+        print(f"  Custo estimado (preços públicos): {_format_usd(estimated_cost)}")
+    else:
+        print("  Custo estimado: INCOMPLETO")
+
+    if known_subtotal is not None and estimated_cost is None:
+        print(f"  Subtotal conhecido: {_format_usd(known_subtotal)}")
+
+    estimated_cases = estimate.get("estimated_cases")
+    incomplete_cases = estimate.get("incomplete_cases")
+
+    if (
+        isinstance(estimated_cases, int)
+        and not isinstance(estimated_cases, bool)
+        and isinstance(incomplete_cases, int)
+        and not isinstance(incomplete_cases, bool)
+    ):
+        print(
+            f"  Cobertura da estimativa: "
+            f"{estimated_cases} estimados / "
+            f"{incomplete_cases} incompletos"
+        )
+
+    if estimate.get("not_actual_invoice") is True:
+        print("  Observação: estimativa de referência, não é uma cobrança real.")
+
+
+# ==========================================================
+# FORMATAÇÃO DAS ESTATÍSTICAS DE REPETIBILIDADE
+# ==========================================================
+
+
+def _get_repeatability_statistics(
+    repeatability: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Localiza as estatísticas na estrutura de repetibilidade."""
+
+    for key in (
+        "metrics",
+        "statistics",
+        "metric_statistics",
+    ):
+        value = repeatability.get(key)
+
+        if isinstance(value, Mapping):
+            return value
+
+    return repeatability
+
+
+def _find_statistic(
+    statistics: Mapping[str, Any],
+    aliases: Sequence[str],
+) -> Mapping[str, Any] | None:
+    """Localiza uma estatística usando nomes alternativos."""
+
+    for alias in aliases:
+        value = statistics.get(alias)
+
+        if isinstance(value, Mapping):
+            return value
+
+    return None
+
+
+def _statistic_number(
+    statistic: Mapping[str, Any],
+    aliases: Sequence[str],
+) -> Any:
+    """Recupera o primeiro valor numérico disponível."""
+
+    for alias in aliases:
+        value = statistic.get(alias)
+
+        if isinstance(value, (int, float, Decimal)) and not isinstance(value, bool):
+            return value
+
+    return None
+
+
+def _format_repeatability_value(
+    metric_name: str,
+    value: Any,
+) -> str:
+    """Formata um valor estatístico conforme a métrica."""
+
+    if value is None:
+        return "N/D"
+
+    if metric_name in {
+        "pass_rate",
+        "cache_hit_rate",
+    }:
+        return _format_percentage(value)
+
+    if metric_name == "average_score":
+        return _format_score(value)
+
+    if metric_name in {
+        "average_duration_ms",
+        "duration_ms",
+    }:
+        return _format_duration(value)
+
+    if metric_name in {
+        "estimated_cost_usd",
+        "cost_estimate_usd",
+    }:
+        return _format_usd(value)
+
+    if isinstance(value, bool):
+        return str(value)
+
+    if isinstance(value, (int, float, Decimal)):
+        return f"{value:,.2f}"
+
+    return str(value)
+
+
+def _print_repeatability_metric(
+    label: str,
+    metric_name: str,
+    statistic: Mapping[str, Any],
+) -> None:
+    """Exibe estatísticas de uma métrica entre as repetições."""
+
+    mean = _statistic_number(
+        statistic,
+        ("mean", "average", "avg"),
+    )
+
+    median = _statistic_number(
+        statistic,
+        ("median",),
+    )
+
+    standard_deviation = _statistic_number(
+        statistic,
+        (
+            "stdev",
+            "stddev",
+            "std",
+            "standard_deviation",
+        ),
+    )
+
+    minimum = _statistic_number(
+        statistic,
+        ("min", "minimum"),
+    )
+
+    maximum = _statistic_number(
+        statistic,
+        ("max", "maximum"),
+    )
+
+    parts = []
+
+    if mean is not None:
+        parts.append(f"média={_format_repeatability_value(metric_name, mean)}")
+
+    if median is not None:
+        parts.append(f"mediana={_format_repeatability_value(metric_name, median)}")
+
+    if standard_deviation is not None:
+        parts.append(
+            "desvio-padrão="
+            f"{_format_repeatability_value(metric_name, standard_deviation)}"
+        )
+
+    if minimum is not None:
+        parts.append(f"mín={_format_repeatability_value(metric_name, minimum)}")
+
+    if maximum is not None:
+        parts.append(f"máx={_format_repeatability_value(metric_name, maximum)}")
+
+    count = statistic.get(
+        "count",
+        statistic.get("samples"),
+    )
+
+    missing = statistic.get(
+        "missing",
+        statistic.get("missing_count"),
+    )
+
+    if isinstance(count, int) and not isinstance(count, bool):
+        parts.append(f"amostras={count}")
+
+    if isinstance(missing, int) and not isinstance(missing, bool) and missing > 0:
+        parts.append(f"ausentes={missing}")
+
+    if parts:
+        print(f"  {label}: " + " | ".join(parts))
+
+
+def _get_repetition_records(
+    provider_run: Mapping[str, Any],
+) -> list[Any] | None:
+    """Localiza os registros individuais das repetições."""
+
+    for key in (
+        "repetitions",
+        "runs",
+        "individual_runs",
+    ):
+        value = provider_run.get(key)
+
+        if isinstance(value, list):
+            return value
+
+        if isinstance(value, Mapping):
+            for nested_key in (
+                "runs",
+                "items",
+                "results",
+                "records",
+            ):
+                nested = value.get(nested_key)
+
+                if isinstance(nested, list):
+                    return nested
+
+    return None
+
+
+def _print_provider_repeatability(
+    provider: str,
+    comparison_data: Mapping[str, Any],
+    provider_run: Mapping[str, Any],
+) -> None:
+    """Exibe os resultados estatísticos das repetições."""
+
+    repeatability = comparison_data.get("repeatability")
+
+    if not isinstance(repeatability, Mapping):
+        repeatability = provider_run.get("repeatability")
+
+    if not isinstance(repeatability, Mapping):
+        return
+
+    individual_runs = _get_repetition_records(provider_run) or []
+
+    requested = repeatability.get(
+        "requested_repetitions",
+        repeatability.get(
+            "requested_runs",
+            repeatability.get(
+                "repetitions",
+                len(individual_runs),
+            ),
+        ),
+    )
+
+    completed = repeatability.get(
+        "completed_repetitions",
+        repeatability.get(
+            "completed_runs",
+            repeatability.get("completed"),
+        ),
+    )
+
+    failed = repeatability.get(
+        "failed_repetitions",
+        repeatability.get(
+            "failed_runs",
+            repeatability.get("failed"),
+        ),
+    )
+
+    completed_statuses = sum(
+        isinstance(run, Mapping)
+        and run.get(
+            "execution_status",
+            run.get("status"),
+        )
+        == "completed"
+        for run in individual_runs
+    )
+
+    failed_statuses = sum(
+        isinstance(run, Mapping)
+        and run.get(
+            "execution_status",
+            run.get("status"),
+        )
+        == "error"
+        for run in individual_runs
+    )
+
+    if completed is None:
+        completed = completed_statuses
+
+    if failed is None:
+        failed = failed_statuses
+
+    print()
+    print("  REPETIBILIDADE")
+
+    print(f"  Execuções: {completed}/{requested} concluídas | {failed} com falha")
+
+    status = repeatability.get("status")
+
+    if status is not None:
+        print(f"  Status da repetibilidade: {str(status).upper()}")
+
+    statistics = _get_repeatability_statistics(repeatability)
+
+    metric_definitions = [
+        (
+            "Taxa de aprovação",
+            "pass_rate",
+            ("pass_rate",),
+        ),
+        (
+            "Score médio",
+            "average_score",
+            ("average_score", "score"),
+        ),
+        (
+            "Latência",
+            "average_duration_ms",
+            ("average_duration_ms", "duration_ms"),
+        ),
+        (
+            "Taxa de cache",
+            "cache_hit_rate",
+            ("cache_hit_rate",),
+        ),
+        (
+            "Custo estimado",
+            "estimated_cost_usd",
+            (
+                "estimated_cost_usd",
+                "cost_estimate_usd",
+            ),
+        ),
+        (
+            "Tokens de entrada",
+            "input_tokens",
+            (
+                "input_tokens",
+                "tokens_input",
+                "tokens.input",
+            ),
+        ),
+        (
+            "Tokens de saída",
+            "output_tokens",
+            (
+                "output_tokens",
+                "tokens_output",
+                "tokens.output",
+            ),
+        ),
+        (
+            "Total de tokens",
+            "total_tokens",
+            (
+                "total_tokens",
+                "tokens_total",
+                "tokens.total",
+            ),
+        ),
+    ]
+
+    for label, metric_name, aliases in metric_definitions:
+        statistic = _find_statistic(
+            statistics,
+            aliases,
+        )
+
+        if statistic is not None:
+            _print_repeatability_metric(
+                label=label,
+                metric_name=metric_name,
+                statistic=statistic,
+            )
+
+    by_case = repeatability.get("by_case")
+
+    if isinstance(by_case, Mapping):
+        print(f"  Cenários com estatísticas individuais: {len(by_case)}")
+
+    elif isinstance(by_case, list):
+        print(f"  Cenários com estatísticas individuais: {len(by_case)}")
+
+
+# ==========================================================
+# RELATÓRIO DO BENCHMARK
+# ==========================================================
+
+
 def print_benchmark_report(
     payload: dict[str, Any],
 ) -> None:
     """Exibe o resumo comparativo do benchmark."""
 
     dataset = payload.get("dataset", {})
-
     summary = payload.get("summary", {})
-
     comparison = payload.get("comparison", {})
+
+    if not isinstance(dataset, Mapping):
+        dataset = {}
+
+    if not isinstance(summary, Mapping):
+        summary = {}
+
+    if not isinstance(comparison, Mapping):
+        comparison = {}
 
     providers = comparison.get(
         "by_provider",
         {},
     )
 
+    if not isinstance(providers, Mapping):
+        providers = {}
+
+    provider_runs = payload.get(
+        "provider_runs",
+        {},
+    )
+
+    if not isinstance(provider_runs, Mapping):
+        provider_runs = {}
+
     print()
     print("AI BUSINESS ANALYST — MULTI-LLM BENCHMARK")
     print("=" * 88)
 
     print(f"Benchmark ID: {payload.get('benchmark_id', 'N/D')}")
-
     print(f"Provedores: {summary.get('provider_count', 0)}")
-
     print(f"Cenários: {dataset.get('case_count', 0)}")
-
     print(f"Dataset SHA-256: {dataset.get('sha256', 'N/D')}")
 
+    configuration = payload.get("configuration", {})
+
+    if isinstance(configuration, Mapping):
+        repetitions = configuration.get("repetitions", 1)
+
+        if isinstance(repetitions, int) and not isinstance(repetitions, bool):
+            print(f"Repetições por provedor: {repetitions}")
+
     print()
-
     print(f"Provedores concluídos: {summary.get('completed_providers', 0)}")
-
     print(f"Provedores com falha: {summary.get('failed_providers', 0)}")
 
     print()
@@ -1324,16 +1921,16 @@ def print_benchmark_report(
     print("-" * 88)
 
     for provider, execution in providers.items():
+        if not isinstance(execution, Mapping):
+            continue
+
         print()
         print(f"PROVEDOR: {provider.upper()}")
 
         if execution.get("execution_status") != "completed":
             print("  Status: ERRO")
-
             print(f"  Tipo: {execution.get('error_type') or 'N/D'}")
-
             print(f"  Mensagem: {execution.get('error') or 'Erro desconhecido'}")
-
             continue
 
         metrics = execution.get(
@@ -1341,7 +1938,15 @@ def print_benchmark_report(
             {},
         )
 
+        if not isinstance(metrics, Mapping):
+            metrics = {}
+
         adherence = metrics.get("analysis_mode_adherence")
+
+        provider_run = provider_runs.get(provider)
+
+        if not isinstance(provider_run, Mapping):
+            provider_run = {}
 
         print(f"  Modelo: {execution.get('model') or 'Não informado'}")
 
@@ -1370,9 +1975,15 @@ def print_benchmark_report(
 
         print(f"  Cenários ignorados: {metrics.get('skipped_cases', 'N/D')}")
 
-        print(
-            "  Custo: N/D (telemetria de tokens e preços "
-            "ainda não integrada ao benchmark)"
+        _print_provider_cost(
+            metrics=metrics,
+            provider_run=provider_run,
+        )
+
+        _print_provider_repeatability(
+            provider=provider,
+            comparison_data=execution,
+            provider_run=provider_run,
         )
 
     # ------------------------------------------------------
@@ -1384,21 +1995,29 @@ def print_benchmark_report(
         {},
     )
 
-    if categories:
+    if isinstance(categories, Mapping) and categories:
         print()
         print("-" * 88)
         print("COMPARAÇÃO POR CATEGORIA")
         print("-" * 88)
 
         for category, provider_metrics in categories.items():
+            if not isinstance(provider_metrics, Mapping):
+                continue
+
             print()
             print(f"CATEGORIA: {category}")
 
             for provider, metrics in provider_metrics.items():
+                if not isinstance(metrics, Mapping):
+                    continue
+
                 print(
                     f"  {provider}: "
-                    f"aprovação={_format_percentage(metrics.get('pass_rate'))} | "
-                    f"score={_format_score(metrics.get('average_score'))}"
+                    f"aprovação="
+                    f"{_format_percentage(metrics.get('pass_rate'))} | "
+                    f"score="
+                    f"{_format_score(metrics.get('average_score'))}"
                 )
 
     # ------------------------------------------------------
@@ -1410,13 +2029,16 @@ def print_benchmark_report(
         {},
     )
 
-    if cases:
+    if isinstance(cases, Mapping) and cases:
         print()
         print("-" * 88)
         print("COMPARAÇÃO POR CENÁRIO")
         print("-" * 88)
 
         for case_id, case_data in cases.items():
+            if not isinstance(case_data, Mapping):
+                continue
+
             expected_mode = case_data.get("expected_analysis_mode")
 
             print()
@@ -1425,10 +2047,18 @@ def print_benchmark_report(
             if expected_mode is not None:
                 print(f"  Modo esperado: {expected_mode}")
 
-            for provider, result in case_data.get(
+            case_providers = case_data.get(
                 "providers",
                 {},
-            ).items():
+            )
+
+            if not isinstance(case_providers, Mapping):
+                continue
+
+            for provider, result in case_providers.items():
+                if not isinstance(result, Mapping):
+                    continue
+
                 mode = result.get("analysis_mode") or "N/D"
 
                 print(
@@ -1441,10 +2071,204 @@ def print_benchmark_report(
     print()
     print("=" * 88)
     print(
-        "Benchmark finalizado. Nenhum ranking ponderado "
-        "ou custo não verificado foi inferido."
+        "Benchmark finalizado. Custos são estimativas baseadas "
+        "nos preços cadastrados, não cobranças reais."
     )
     print()
+
+
+# ==========================================================
+# VALIDAÇÃO DE REPETIBILIDADE NO CÓDIGO DE SAÍDA
+# ==========================================================
+
+
+def _is_complete_repetition_report(
+    report: Any,
+    expected_case_count: int,
+    expected_case_ids: set[str],
+) -> bool:
+    """Valida cobertura e resultado de uma repetição individual."""
+
+    if not isinstance(report, Mapping):
+        return False
+
+    summary = report.get("summary")
+
+    if not isinstance(summary, Mapping):
+        return False
+
+    if summary.get("total_cases") != expected_case_count:
+        return False
+
+    if (
+        summary.get("failed_cases", 0) > 0
+        or summary.get("error_cases", 0) > 0
+        or summary.get("skipped_cases", 0) > 0
+    ):
+        return False
+
+    results = report.get("results")
+
+    if not isinstance(results, list):
+        return False
+
+    case_ids = []
+
+    for result in results:
+        if not isinstance(result, Mapping):
+            return False
+
+        case_id = result.get("case_id")
+
+        if not isinstance(case_id, str) or not case_id.strip():
+            return False
+
+        if result.get("status") != "passed":
+            return False
+
+        case_ids.append(case_id)
+
+    return (
+        len(case_ids) == expected_case_count
+        and len(set(case_ids)) == expected_case_count
+        and set(case_ids) == expected_case_ids
+    )
+
+
+def _get_repetition_report(
+    repetition: Mapping[str, Any],
+) -> Mapping[str, Any] | None:
+    """Localiza o relatório individual em um registro de repetição."""
+
+    for key in (
+        "report",
+        "evaluation_report",
+        "result",
+    ):
+        report = repetition.get(key)
+
+        if isinstance(report, Mapping):
+            return report
+
+    if isinstance(repetition.get("summary"), Mapping) and isinstance(
+        repetition.get("results"), list
+    ):
+        return repetition
+
+    return None
+
+
+def _validate_provider_repetitions(
+    execution: Mapping[str, Any],
+    configuration: Mapping[str, Any],
+    expected_case_count: int,
+    expected_case_ids: set[str],
+    comparison_data: Mapping[str, Any] | None = None,
+) -> bool:
+    """Valida todas as repetições individuais de um provedor."""
+
+    repeatability = execution.get("repeatability")
+
+    if not isinstance(repeatability, Mapping):
+        repeatability = {}
+
+    if not repeatability and isinstance(comparison_data, Mapping):
+        comparison_repeatability = comparison_data.get("repeatability")
+
+        if isinstance(comparison_repeatability, Mapping):
+            repeatability = comparison_repeatability
+
+    individual_runs = _get_repetition_records(execution)
+
+    if individual_runs is None and isinstance(comparison_data, Mapping):
+        individual_runs = _get_repetition_records(comparison_data)
+
+    configured_count = configuration.get("repetitions")
+
+    summary_count = repeatability.get(
+        "requested_repetitions",
+        repeatability.get(
+            "requested_runs",
+            repeatability.get("repetitions"),
+        ),
+    )
+
+    requested = configured_count if configured_count is not None else summary_count
+
+    if requested is None:
+        requested = len(individual_runs) if individual_runs is not None else 1
+
+    if not isinstance(requested, int) or isinstance(requested, bool) or requested <= 0:
+        return False
+
+    if requested == 1 and individual_runs is None:
+        return True
+
+    if not isinstance(individual_runs, list):
+        return False
+
+    if len(individual_runs) != requested:
+        return False
+
+    completed_count = 0
+    failed_count = 0
+
+    for individual_run in individual_runs:
+        if not isinstance(individual_run, Mapping):
+            return False
+
+        status = individual_run.get(
+            "execution_status",
+            individual_run.get("status"),
+        )
+
+        if status != "completed":
+            failed_count += 1
+            continue
+
+        individual_report = _get_repetition_report(individual_run)
+
+        if not _is_complete_repetition_report(
+            report=individual_report,
+            expected_case_count=expected_case_count,
+            expected_case_ids=expected_case_ids,
+        ):
+            failed_count += 1
+            continue
+
+        completed_count += 1
+
+    if failed_count > 0 or completed_count != requested:
+        return False
+
+    declared_failed = repeatability.get(
+        "failed_repetitions",
+        repeatability.get(
+            "failed_runs",
+            0,
+        ),
+    )
+
+    if (
+        isinstance(declared_failed, bool)
+        or not isinstance(declared_failed, int)
+        or declared_failed != 0
+    ):
+        return False
+
+    declared_completed = repeatability.get(
+        "completed_repetitions",
+        repeatability.get("completed_runs"),
+    )
+
+    if declared_completed is not None and (
+        isinstance(declared_completed, bool)
+        or not isinstance(declared_completed, int)
+        or declared_completed != requested
+    ):
+        return False
+
+    return True
 
 
 # ==========================================================
@@ -1477,21 +2301,17 @@ def validation_exit_code(
 
 
 def benchmark_exit_code(
-    payload: dict[str, Any],
+    payload: Any,
 ) -> int:
-    """Valida a integridade e o resultado completo do benchmark."""
+    """Valida integridade, cobertura e resultado das repetições."""
 
     if not isinstance(payload, Mapping):
         return EXIT_FAILURE
 
     benchmark_summary = payload.get("summary", {})
-
     dataset = payload.get("dataset", {})
-
     configuration = payload.get("configuration", {})
-
     provider_runs = payload.get("provider_runs", {})
-
     comparison = payload.get("comparison", {})
 
     if not all(
@@ -1507,7 +2327,6 @@ def benchmark_exit_code(
         return EXIT_FAILURE
 
     expected_case_ids = dataset.get("case_ids")
-
     expected_case_count = dataset.get("case_count")
 
     if (
@@ -1564,10 +2383,30 @@ def benchmark_exit_code(
     if configuration.get("same_dataset_for_all_providers") is not True:
         return EXIT_FAILURE
 
+    configured_repetitions = configuration.get(
+        "repetitions",
+        1,
+    )
+
+    if (
+        not isinstance(configured_repetitions, int)
+        or isinstance(configured_repetitions, bool)
+        or configured_repetitions <= 0
+    ):
+        return EXIT_FAILURE
+
     if benchmark_summary.get("failed_providers", 0) > 0:
         return EXIT_FAILURE
 
     if benchmark_summary.get("completed_providers") != len(expected_providers):
+        return EXIT_FAILURE
+
+    comparison_providers = comparison.get("by_provider")
+
+    if not isinstance(comparison_providers, Mapping):
+        return EXIT_FAILURE
+
+    if set(comparison_providers) != expected_provider_set:
         return EXIT_FAILURE
 
     for provider, execution in provider_runs.items():
@@ -1627,15 +2466,21 @@ def benchmark_exit_code(
         if set(report_case_ids) != expected_case_set:
             return EXIT_FAILURE
 
-    provider_comparison = comparison.get("by_provider")
+        comparison_provider = comparison_providers.get(provider)
 
-    if not isinstance(provider_comparison, Mapping):
-        return EXIT_FAILURE
+        if not isinstance(comparison_provider, Mapping):
+            return EXIT_FAILURE
 
-    if set(provider_comparison) != expected_provider_set:
-        return EXIT_FAILURE
+        if not _validate_provider_repetitions(
+            execution=execution,
+            configuration=configuration,
+            expected_case_count=expected_case_count,
+            expected_case_ids=expected_case_set,
+            comparison_data=comparison_provider,
+        ):
+            return EXIT_FAILURE
 
-    for provider, provider_data in provider_comparison.items():
+    for provider_data in comparison_providers.values():
         if not isinstance(provider_data, Mapping):
             return EXIT_FAILURE
 
@@ -1656,7 +2501,7 @@ def benchmark_exit_code(
     if set(case_comparison) != expected_case_set:
         return EXIT_FAILURE
 
-    for case_id, case_data in case_comparison.items():
+    for case_data in case_comparison.values():
         if not isinstance(case_data, Mapping):
             return EXIT_FAILURE
 
@@ -1668,7 +2513,7 @@ def benchmark_exit_code(
         if set(provider_results) != expected_provider_set:
             return EXIT_FAILURE
 
-        for provider, result in provider_results.items():
+        for result in provider_results.values():
             if not isinstance(result, Mapping):
                 return EXIT_FAILURE
 
@@ -1698,7 +2543,6 @@ def main(
     """Executa a interface de linha de comando."""
 
     parser = build_parser()
-
     args = parser.parse_args(argv)
 
     configure_logging(args.log_level)
@@ -1716,7 +2560,14 @@ def main(
     is_non_llm_mode = args.list_cases or args.validate_only or is_history_mode
 
     # ------------------------------------------------------
-    # 2. Validar autorização explícita de chamadas de IA.
+    # 2. Validar a utilização do argumento de repetibilidade.
+    # ------------------------------------------------------
+
+    if args.repetitions > 1 and args.benchmark is None:
+        parser.error("--repetitions somente pode ser utilizado com --benchmark.")
+
+    # ------------------------------------------------------
+    # 3. Validar autorização explícita de chamadas de IA.
     # ------------------------------------------------------
 
     if args.allow_llm and is_non_llm_mode:
@@ -1739,7 +2590,7 @@ def main(
         parser.error("--output não é utilizado com --list-cases.")
 
     # ------------------------------------------------------
-    # 3. Validar configuração do benchmark.
+    # 4. Validar configuração do benchmark.
     # ------------------------------------------------------
 
     if args.benchmark is not None:
@@ -1750,7 +2601,7 @@ def main(
             parser.error("--benchmark não aceita provedores duplicados.")
 
     # ------------------------------------------------------
-    # 4. Consultar o histórico de benchmarks.
+    # 5. Consultar o histórico de benchmarks.
     #
     # Estas operações são independentes do dataset.
     # ------------------------------------------------------
@@ -1770,7 +2621,7 @@ def main(
             return EXIT_ERROR
 
         # --------------------------------------------------
-        # 4.1. Comparação entre duas execuções históricas.
+        # 5.1. Comparação entre duas execuções históricas.
         # --------------------------------------------------
 
         if is_comparison_mode:
@@ -1830,7 +2681,7 @@ def main(
             return benchmark_comparison_exit_code(payload)
 
         # --------------------------------------------------
-        # 4.2. Listagem paginada do histórico.
+        # 5.2. Listagem paginada do histórico.
         # --------------------------------------------------
 
         if args.list_benchmarks:
@@ -1886,7 +2737,7 @@ def main(
             return EXIT_SUCCESS
 
         # --------------------------------------------------
-        # 4.3. Recuperação do relatório completo pelo ID.
+        # 5.3. Recuperação do relatório completo pelo ID.
         # --------------------------------------------------
 
         if args.show_benchmark is not None:
@@ -1938,7 +2789,7 @@ def main(
             return EXIT_SUCCESS
 
     # ------------------------------------------------------
-    # 5. Carregar e filtrar cenários.
+    # 6. Carregar e filtrar cenários.
     # ------------------------------------------------------
 
     try:
@@ -1960,7 +2811,7 @@ def main(
         return EXIT_ERROR
 
     # ------------------------------------------------------
-    # 6. Listagem sem execução.
+    # 7. Listagem sem execução.
     # ------------------------------------------------------
 
     if args.list_cases:
@@ -1968,7 +2819,7 @@ def main(
         return EXIT_SUCCESS
 
     # ------------------------------------------------------
-    # 7. Validação de SQL sem IA.
+    # 8. Validação de SQL sem IA.
     # ------------------------------------------------------
 
     if args.validate_only:
@@ -1996,15 +2847,22 @@ def main(
         return validation_exit_code(payload)
 
     # ------------------------------------------------------
-    # 8. Benchmark comparativo com autorização explícita.
+    # 9. Benchmark comparativo com autorização explícita.
     # ------------------------------------------------------
 
     if args.benchmark is not None:
         try:
+            benchmark_arguments = {
+                "cases": selected_cases,
+                "providers": args.benchmark,
+                "dataset_path": args.dataset,
+            }
+
+            if args.repetitions != 1:
+                benchmark_arguments["repetitions"] = args.repetitions
+
             payload = execute_benchmark(
-                cases=selected_cases,
-                providers=args.benchmark,
-                dataset_path=args.dataset,
+                **benchmark_arguments,
             )
 
         except Exception as exc:
@@ -2041,7 +2899,7 @@ def main(
         return benchmark_exit_code(payload)
 
     # ------------------------------------------------------
-    # 9. Execução individual com autorização explícita.
+    # 10. Execução individual com autorização explícita.
     # ------------------------------------------------------
 
     try:
@@ -2064,7 +2922,7 @@ def main(
     print_evaluation_report(payload)
 
     # ------------------------------------------------------
-    # 10. Exportação JSON.
+    # 11. Exportação JSON.
     # ------------------------------------------------------
 
     if args.output:
@@ -2087,7 +2945,7 @@ def main(
             return EXIT_ERROR
 
     # ------------------------------------------------------
-    # 11. Código de saída.
+    # 12. Código de saída.
     # ------------------------------------------------------
 
     return evaluation_exit_code(payload)

@@ -38,7 +38,11 @@
       "comparison_mode": "tolerant",
       "absolute_tolerance": 0.01,
       "relative_tolerance": 0,
-      "required_columns": ["canceled_orders", "total_orders", "cancellation_rate_pct"],
+      "required_columns": [
+        "canceled_orders",
+        "total_orders",
+        "cancellation_rate_pct"
+      ],
       "allow_extra_columns": false,
       "sort_rows": true,
       "tags": ["count", "percentage", "cancellation"]
@@ -52,7 +56,11 @@
       "comparison_mode": "tolerant",
       "absolute_tolerance": 0.01,
       "relative_tolerance": 0,
-      "required_columns": ["gross_items_value", "items_value_after_discount", "total_discounts"],
+      "required_columns": [
+        "gross_items_value",
+        "items_value_after_discount",
+        "total_discounts"
+      ],
       "allow_extra_columns": false,
       "sort_rows": true,
       "tags": ["sum", "financial", "discount"]
@@ -80,7 +88,11 @@
       "comparison_mode": "tolerant",
       "absolute_tolerance": 0.01,
       "relative_tolerance": 0,
-      "required_columns": ["city", "delivered_orders", "average_delivery_minutes"],
+      "required_columns": [
+        "city",
+        "delivered_orders",
+        "average_delivery_minutes"
+      ],
       "allow_extra_columns": false,
       "sort_rows": true,
       "tags": ["average", "delivery", "city"]
@@ -94,7 +106,11 @@
       "comparison_mode": "tolerant",
       "absolute_tolerance": 0.01,
       "relative_tolerance": 0,
-      "required_columns": ["category", "rating_count", "average_rating"],
+      "required_columns": [
+        "category",
+        "rating_count",
+        "average_rating"
+      ],
       "allow_extra_columns": false,
       "sort_rows": true,
       "tags": ["join", "average", "ratings"]
@@ -118,14 +134,24 @@
       "question": "Compare o tempo médio de entrega em dias chuvosos e não chuvosos, considerando somente pedidos entregues. Apresente também a quantidade de pedidos em cada condição.",
       "reference_sql": "SELECT is_raining, COUNT(*) AS delivered_orders, ROUND(AVG(delivery_minutes), 2) AS average_delivery_minutes FROM orders WHERE status = 'delivered' AND delivery_minutes IS NOT NULL GROUP BY is_raining ORDER BY is_raining",
       "category": "operational_behavior",
-      "description": "Compara indicadores de entrega conforme a ocorrência de chuva, utilizando os dados sintéticos.",
+      "description": "Compara indicadores de entrega conforme a ocorrência de chuva, utilizando os dados sintéticos. A associação observada não deve ser interpretada como evidência causal.",
       "comparison_mode": "tolerant",
       "absolute_tolerance": 0.01,
       "relative_tolerance": 0,
-      "required_columns": ["is_raining", "delivered_orders", "average_delivery_minutes"],
+      "required_columns": [
+        "is_raining",
+        "delivered_orders",
+        "average_delivery_minutes"
+      ],
       "allow_extra_columns": false,
       "sort_rows": true,
-      "tags": ["weather", "average", "delivery", "comparison"]
+      "tags": [
+        "weather",
+        "average",
+        "delivery",
+        "comparison",
+        "causality-caution"
+      ]
     },
     {
       "case_id": "operational_overview",
@@ -154,6 +180,218 @@
         "delivery"
       ],
       "expected_analysis_mode": "multi_query"
+    },
+    {
+      "case_id": "top_restaurants_delivered",
+      "question": "Quais são os cinco restaurantes com mais pedidos entregues em 2025? Apresente o ID, o nome, a categoria, a cidade e a quantidade de pedidos entregues, em ordem decrescente. Em caso de empate, ordene pelo ID do restaurante em ordem crescente.",
+      "reference_sql": "SELECT r.restaurant_id, r.name AS restaurant_name, r.category, r.city, COUNT(o.order_id) AS delivered_orders FROM orders o INNER JOIN restaurants r ON o.restaurant_id = r.restaurant_id WHERE o.status = 'delivered' GROUP BY r.restaurant_id, r.name, r.category, r.city ORDER BY delivered_orders DESC, r.restaurant_id ASC LIMIT 5",
+      "category": "ranking",
+      "description": "Avalia agregação por entidade, ordenação TOP N, limite de linhas e desempate determinístico.",
+      "comparison_mode": "exact",
+      "absolute_tolerance": 0,
+      "relative_tolerance": 0,
+      "required_columns": [
+        "restaurant_id",
+        "restaurant_name",
+        "category",
+        "city",
+        "delivered_orders"
+      ],
+      "allow_extra_columns": false,
+      "sort_rows": false,
+      "tags": [
+        "top-n",
+        "ranking",
+        "join",
+        "group-by",
+        "order-by",
+        "limit",
+        "difficulty:intermediate"
+      ]
+    },
+    {
+      "case_id": "combined_filters_q4",
+      "question": "No quarto trimestre de 2025, quantos pedidos entregues em São Paulo foram pagos via Pix em dias chuvosos? Apresente também o valor médio dos itens, o total de descontos e o tempo médio de entrega desses pedidos.",
+      "reference_sql": "SELECT COUNT(*) AS delivered_orders, ROUND(AVG(items_total), 2) AS average_items_value, ROUND(SUM(discount), 2) AS total_discounts, ROUND(AVG(delivery_minutes), 2) AS average_delivery_minutes FROM orders WHERE city = 'Sao Paulo' AND status = 'delivered' AND payment_method = 'pix' AND is_raining = TRUE AND order_ts >= TIMESTAMP '2025-10-01 00:00:00' AND order_ts < TIMESTAMP '2026-01-01 00:00:00'",
+      "category": "combined_filters",
+      "description": "Avalia a combinação de filtros categóricos, booleanos e temporais em uma mesma consulta, com agregações sobre o subconjunto resultante.",
+      "comparison_mode": "tolerant",
+      "absolute_tolerance": 0.01,
+      "relative_tolerance": 0,
+      "required_columns": [
+        "delivered_orders",
+        "average_items_value",
+        "total_discounts",
+        "average_delivery_minutes"
+      ],
+      "allow_extra_columns": false,
+      "sort_rows": true,
+      "tags": [
+        "combined-filters",
+        "date-range",
+        "city",
+        "payment",
+        "weather",
+        "aggregation",
+        "difficulty:intermediate"
+      ]
+    },
+    {
+      "case_id": "category_vehicle_multi_join",
+      "question": "Para os pedidos entregues em São Paulo, apresente por categoria de restaurante e tipo de veículo do entregador a quantidade de entregas, a quantidade de clientes distintos e o tempo médio de entrega. Considere somente entregas com tempo registrado.",
+      "reference_sql": "SELECT r.category, c.vehicle, COUNT(o.order_id) AS delivered_orders, COUNT(DISTINCT cu.customer_id) AS distinct_customers, ROUND(AVG(o.delivery_minutes), 2) AS average_delivery_minutes FROM orders o INNER JOIN restaurants r ON o.restaurant_id = r.restaurant_id INNER JOIN couriers c ON o.courier_id = c.courier_id INNER JOIN customers cu ON o.customer_id = cu.customer_id WHERE o.city = 'Sao Paulo' AND o.status = 'delivered' AND o.delivery_minutes IS NOT NULL GROUP BY r.category, c.vehicle ORDER BY r.category, c.vehicle",
+      "category": "multi_join",
+      "description": "Avalia três relacionamentos entre pedidos, restaurantes, entregadores e clientes, além de agrupamento composto e contagem distinta.",
+      "comparison_mode": "tolerant",
+      "absolute_tolerance": 0.01,
+      "relative_tolerance": 0,
+      "required_columns": [
+        "category",
+        "vehicle",
+        "delivered_orders",
+        "distinct_customers",
+        "average_delivery_minutes"
+      ],
+      "allow_extra_columns": false,
+      "sort_rows": true,
+      "tags": [
+        "join",
+        "multi-join",
+        "three-tables",
+        "count-distinct",
+        "group-by",
+        "difficulty:advanced"
+      ]
+    },
+    {
+      "case_id": "unrated_delivered_orders",
+      "question": "Entre os pedidos entregues, quantos não receberam avaliação dos clientes e qual percentual das entregas isso representa? Apresente também o total de pedidos entregues.",
+      "reference_sql": "SELECT COUNT(*) FILTER (WHERE customer_rating IS NULL) AS unrated_delivered_orders, COUNT(*) AS delivered_orders, ROUND(COUNT(*) FILTER (WHERE customer_rating IS NULL) * 100.0 / NULLIF(COUNT(*), 0), 2) AS unrated_rate_pct FROM orders WHERE status = 'delivered'",
+      "category": "null_handling",
+      "description": "Avalia o tratamento de valores NULL, contagem condicional e cálculo percentual com denominador restrito às entregas.",
+      "comparison_mode": "tolerant",
+      "absolute_tolerance": 0.01,
+      "relative_tolerance": 0,
+      "required_columns": [
+        "unrated_delivered_orders",
+        "delivered_orders",
+        "unrated_rate_pct"
+      ],
+      "allow_extra_columns": false,
+      "sort_rows": true,
+      "tags": [
+        "null",
+        "is-null",
+        "conditional-aggregation",
+        "percentage",
+        "difficulty:intermediate"
+      ]
+    },
+    {
+      "case_id": "delivered_without_delivery_time",
+      "question": "Liste os pedidos marcados como entregues que não possuem tempo de entrega registrado. Apresente o ID do pedido, a cidade e o tempo de entrega.",
+      "reference_sql": "SELECT order_id, city, delivery_minutes FROM orders WHERE status = 'delivered' AND delivery_minutes IS NULL ORDER BY order_id",
+      "category": "empty_result",
+      "description": "Avalia se o agente reconhece corretamente um conjunto vazio: no dataset sintético, pedidos cancelados não possuem tempo de entrega, enquanto pedidos entregues possuem esse valor registrado.",
+      "comparison_mode": "exact",
+      "absolute_tolerance": 0,
+      "relative_tolerance": 0,
+      "required_columns": [
+        "order_id",
+        "city",
+        "delivery_minutes"
+      ],
+      "allow_extra_columns": false,
+      "sort_rows": false,
+      "tags": [
+        "empty-result",
+        "null",
+        "is-null",
+        "negative-filter",
+        "difficulty:advanced"
+      ]
+    },
+    {
+      "case_id": "top_categories_revenue",
+      "question": "Quais são as cinco categorias de restaurante com maior valor bruto de itens nos pedidos entregues? Apresente a categoria, a quantidade de pedidos entregues e o valor bruto total, em ordem decrescente de valor. Em caso de empate, ordene a categoria alfabeticamente.",
+      "reference_sql": "SELECT r.category, COUNT(o.order_id) AS delivered_orders, ROUND(SUM(o.items_total), 2) AS gross_items_value FROM orders o INNER JOIN restaurants r ON o.restaurant_id = r.restaurant_id WHERE o.status = 'delivered' GROUP BY r.category ORDER BY gross_items_value DESC, r.category ASC LIMIT 5",
+      "category": "ranking",
+      "description": "Avalia ranking TOP N com JOIN, soma financeira, contagem, ordenação por métrica agregada e desempate determinístico.",
+      "comparison_mode": "tolerant",
+      "absolute_tolerance": 0.01,
+      "relative_tolerance": 0,
+      "required_columns": [
+        "category",
+        "delivered_orders",
+        "gross_items_value"
+      ],
+      "allow_extra_columns": false,
+      "sort_rows": false,
+      "tags": [
+        "top-n",
+        "ranking",
+        "revenue",
+        "sum",
+        "join",
+        "limit",
+        "difficulty:intermediate"
+      ]
+    },
+    {
+      "case_id": "clarification_restaurant_performance",
+      "question": "Quais restaurantes tiveram o melhor desempenho?",
+      "category": "clarification",
+      "description": "Avalia se o agente identifica a ambiguidade da expressão melhor desempenho e solicita esclarecimentos sobre a métrica e o período desejados.",
+      "evaluation_type": "clarification",
+      "expected_behavior": "ask_clarification",
+      "evaluation_criteria": [
+        "clarification_question_present",
+        "sql_not_executed"
+      ],
+      "tags": [
+        "clarification",
+        "ambiguity",
+        "missing-metric",
+        "missing-period"
+      ]
+    },
+    {
+      "case_id": "unanswerable_net_profit",
+      "question": "Qual foi o lucro líquido de cada restaurante em 2025, considerando custos operacionais, salários, impostos e despesas fixas?",
+      "category": "unanswerable",
+      "description": "Avalia se o agente reconhece que o dataset contém informações sobre pedidos e valores de itens, mas não possui custos operacionais, salários, impostos ou despesas fixas para calcular lucro líquido.",
+      "evaluation_type": "unanswerable",
+      "expected_behavior": "abstain",
+      "evaluation_criteria": [
+        "explanation_present",
+        "limitations_present",
+        "sql_not_executed"
+      ],
+      "tags": [
+        "unanswerable",
+        "missing-data",
+        "financial",
+        "abstention"
+      ]
+    },
+    {
+      "case_id": "partial_city_delivery_performance",
+      "question": "Compare o desempenho das cidades em 2025 utilizando a quantidade de pedidos entregues e o tempo médio de entrega. Explique também quanto dos atrasos foi causado pelo trânsito em cada cidade.",
+      "category": "partial_answer",
+      "description": "Avalia se o agente consegue apresentar indicadores de entrega disponíveis por cidade e reconhecer que o dataset não contém informações de trânsito que permitam atribuir causalmente os atrasos a essa variável.",
+      "evaluation_type": "partial_answer",
+      "expected_behavior": "partial_answer",
+      "evaluation_criteria": [
+        "supported_information_present",
+        "limitations_present"
+      ],
+      "tags": [
+        "partial-answer",
+        "delivery",
+        "city",
+        "missing-data",
+        "causality"
+      ]
     }
   ]
 }

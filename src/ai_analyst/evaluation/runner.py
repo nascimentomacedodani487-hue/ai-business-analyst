@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Iterable, Mapping
+from copy import deepcopy
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -42,17 +43,23 @@ class EvaluationRunner:
 
     O runner mantém o BusinessAnalyst independente.
 
-    As consultas de referência são executadas pelo SQLExecutor,
-    que utiliza os guardrails e a conexão somente leitura existentes.
+    Cenários SQL:
+    - Executam o SQL de referência pelo SQLExecutor.
+    - Executam a pergunta no BusinessAnalyst.
+    - Comparam os resultados obtidos com a referência.
+    - Validam a fundamentação das afirmações da resposta.
 
-    As perguntas avaliadas são executadas pelo BusinessAnalyst,
-    utilizando o provedor selecionado.
+    Cenários comportamentais:
+    - Não executam SQL de referência.
+    - Executam a pergunta no BusinessAnalyst.
+    - Avaliam o comportamento retornado pelo agente.
 
     O runner aceita dependências injetáveis para permitir testes
     sem chamadas reais aos provedores de IA.
 
     Cada cenário possui um contexto independente de métricas LLM,
-    permitindo rastrear requisições, tokens, retries e latência.
+    permitindo rastrear requisições, tokens, retries, latência
+    e estimativas de custos por modelo.
     """
 
     def __init__(
@@ -63,6 +70,12 @@ class EvaluationRunner:
         reference_executor: SQLExecutor | None = None,
         evaluator: ResultEvaluator | None = None,
     ):
+        if not isinstance(provider_name, str):
+            raise TypeError("provider_name deve ser uma string.")
+
+        if not provider_name.strip():
+            raise ValueError("provider_name deve ser uma string não vazia.")
+
         normalized_provider = provider_name.strip().lower()
 
         if normalized_provider not in SUPPORTED_PROVIDERS:
@@ -77,7 +90,9 @@ class EvaluationRunner:
 
         self.dataset_path = Path(dataset_path) if dataset_path is not None else None
 
-        self.analyst_factory = analyst_factory or BusinessAnalyst
+        self.analyst_factory = (
+            analyst_factory if analyst_factory is not None else BusinessAnalyst
+        )
 
         self.reference_executor = (
             reference_executor if reference_executor is not None else SQLExecutor()
@@ -89,7 +104,7 @@ class EvaluationRunner:
     # INICIALIZAÇÃO
     # ==========================================================
 
-    def _create_analyst(self):
+    def _create_analyst(self) -> Any:
         """Cria uma nova instância do agente."""
 
         return self.analyst_factory(provider_name=self.provider_name)
@@ -122,7 +137,12 @@ class EvaluationRunner:
         ele substitui o identificador temporário de rastreamento.
         """
 
-        snapshot = analysis_metrics.snapshot()
+        snapshot_method = getattr(analysis_metrics, "snapshot", None)
+
+        if not callable(snapshot_method):
+            raise TypeError("O contexto de métricas LLM não disponibiliza snapshot().")
+
+        snapshot = snapshot_method()
 
         if not isinstance(snapshot, Mapping):
             raise TypeError(
@@ -156,6 +176,119 @@ class EvaluationRunner:
             normalized_snapshot["analysis_id"] = analysis_id
 
         return normalized_snapshot
+
+    @staticmethod
+    def _resolve_analysis_identity(
+        analysis: Mapping[str, Any],
+        *,
+        default_provider: str,
+        default_model: str | None,
+        default_analysis_id: str,
+    ) -> tuple[str, str | None, str]:
+        """Valida e normaliza a identidade retornada pelo agente.
+
+        O provedor precisa pertencer à lista suportada.
+        Modelo e identificador precisam ser strings quando informados.
+
+        Valores ausentes utilizam os valores de referência do runner
+        e do contexto individual da avaliação.
+        """
+
+        raw_provider = analysis.get("provider")
+
+        if raw_provider is None:
+            raw_provider = default_provider
+
+        elif isinstance(raw_provider, str) and not raw_provider.strip():
+            raw_provider = default_provider
+
+        if not isinstance(raw_provider, str):
+            raise TypeError("O provedor retornado pelo agente deve ser uma string.")
+
+        provider = raw_provider.strip().lower()
+
+        if provider not in SUPPORTED_PROVIDERS:
+            available = ", ".join(sorted(SUPPORTED_PROVIDERS))
+
+            raise ValueError(
+                f"Provedor retornado pelo agente não suportado: '{provider}'. "
+                f"Provedores disponíveis: {available}."
+            )
+
+        raw_model = analysis.get("model")
+
+        if raw_model is None:
+            raw_model = default_model
+
+        elif isinstance(raw_model, str) and not raw_model.strip():
+            raw_model = default_model
+
+        if raw_model is not None and not isinstance(raw_model, str):
+            raise TypeError("O modelo retornado pelo agente deve ser uma string.")
+
+        model = raw_model.strip() if isinstance(raw_model, str) else None
+
+        raw_analysis_id = analysis.get("analysis_id")
+
+        if raw_analysis_id is None:
+            raw_analysis_id = default_analysis_id
+
+        elif isinstance(raw_analysis_id, str) and not raw_analysis_id.strip():
+            raw_analysis_id = default_analysis_id
+
+        if not isinstance(raw_analysis_id, str):
+            raise TypeError(
+                "O identificador da análise retornado pelo agente deve ser uma string."
+            )
+
+        analysis_id = raw_analysis_id.strip()
+
+        if not analysis_id:
+            raise ValueError("O identificador da análise não pode ser vazio.")
+
+        return provider, model, analysis_id
+
+    @staticmethod
+    def _extract_token_cost_estimate(
+        llm_usage: Mapping[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """Extrai e copia a estimativa de custos do snapshot de LLM.
+
+        O snapshot completo continua disponível em metadata["llm_metrics"].
+
+        A cópia independente permite armazenar a estimativa diretamente
+        no EvaluationCaseResult sem compartilhar referências mutáveis.
+        """
+
+        if not isinstance(llm_usage, Mapping):
+            return None
+
+        estimate = llm_usage.get("token_cost_estimate")
+
+        if not isinstance(estimate, Mapping):
+            return None
+
+        return deepcopy(dict(estimate))
+
+    @staticmethod
+    def _get_llm_usage_count(
+        llm_usage: Mapping[str, Any],
+        section: str,
+        key: str,
+    ) -> int:
+        """Obtém uma contagem de métricas sem presumir campos existentes."""
+
+        values = llm_usage.get(section, {})
+
+        if not isinstance(values, Mapping):
+            return 0
+
+        value = values.get(key, 0)
+
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return 0
+
+        return value
 
     # ==========================================================
     # NORMALIZAÇÃO DOS RESULTADOS
@@ -262,7 +395,19 @@ class EvaluationRunner:
            necessárias para a avaliação.
 
         Não realiza joins heurísticos entre tabelas.
+        Não utiliza o campo raiz 'results' como fallback para
+        consultas compostas sem resultados individuais.
         """
+
+        if not isinstance(queries, list):
+            raise TypeError("As consultas de uma análise composta devem ser uma lista.")
+
+        for index, query in enumerate(queries):
+            if not isinstance(query, Mapping):
+                raise TypeError(
+                    f"A consulta {index} de uma análise composta "
+                    "deve ser um objeto de mapeamento."
+                )
 
         successful_queries = [
             query for query in queries if query.get("status") == "success"
@@ -271,8 +416,10 @@ class EvaluationRunner:
         failed_queries = [
             query
             for query in queries
-            if query.get("status") == "failure"
-            and query.get("failure_type") != "unsupported_capability"
+            if (
+                query.get("status") == "failure"
+                and query.get("failure_type") != "unsupported_capability"
+            )
         ]
 
         unsupported_queries = [
@@ -444,6 +591,16 @@ class EvaluationRunner:
         if expected_mode is None:
             return result
 
+        if expected_mode not in SUPPORTED_ANALYSIS_MODES:
+            raise ValueError(
+                f"Modo de análise esperado não suportado: '{expected_mode}'."
+            )
+
+        if actual_mode not in SUPPORTED_ANALYSIS_MODES:
+            raise ValueError(
+                f"Modo de análise executado não suportado: '{actual_mode}'."
+            )
+
         mode_matches = actual_mode == expected_mode
 
         result.metadata.update(
@@ -477,6 +634,472 @@ class EvaluationRunner:
         return result
 
     # ==========================================================
+    # VALIDAÇÃO DAS EVIDÊNCIAS DE RESPOSTAS SQL
+    # ==========================================================
+
+    def _validate_sql_answer_evidence(
+        self,
+        analysis: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Valida as evidências textuais de uma análise SQL.
+
+        A validação é independente da comparação entre resultados SQL.
+
+        Análises legadas sem answer_evidence recebem not_evaluated.
+        Erros internos de validação são registrados separadamente.
+        """
+
+        validator = getattr(
+            self.evaluator,
+            "validate_answer_evidence",
+            None,
+        )
+
+        if not callable(validator):
+            return {
+                "status": "not_evaluated",
+                "claims_count": 0,
+                "valid_claims": 0,
+                "invalid_claims": 0,
+                "reference_count": 0,
+                "valid_references": 0,
+                "invalid_references": 0,
+                "claims_supported": None,
+                "answer_numeric_values": [],
+                "unsupported_numeric_values": [],
+                "uncovered_numeric_values": [],
+                "differences": [
+                    "O avaliador não disponibiliza validação de evidências."
+                ],
+            }
+
+        try:
+            report = validator(dict(analysis))
+
+            if not isinstance(report, Mapping):
+                raise TypeError(
+                    "A validação de evidências deve retornar um mapeamento."
+                )
+
+            normalized_report = deepcopy(dict(report))
+
+            if normalized_report.get("status") not in {
+                "verified",
+                "failed",
+                "not_evaluated",
+            }:
+                raise ValueError("A validação retornou um status desconhecido.")
+
+            claims_supported = normalized_report.get("claims_supported")
+
+            if claims_supported is not None and not isinstance(
+                claims_supported,
+                bool,
+            ):
+                raise TypeError("claims_supported deve ser um booleano ou None.")
+
+            counter_fields = (
+                "claims_count",
+                "valid_claims",
+                "invalid_claims",
+                "reference_count",
+                "valid_references",
+                "invalid_references",
+            )
+
+            for field in counter_fields:
+                if field in normalized_report:
+                    value = normalized_report[field]
+
+                    if (
+                        isinstance(value, bool)
+                        or not isinstance(value, int)
+                        or value < 0
+                    ):
+                        raise ValueError(
+                            f"O contador '{field}' possui um valor inválido."
+                        )
+
+            if all(field in normalized_report for field in counter_fields[:3]):
+                if (
+                    normalized_report["valid_claims"]
+                    + normalized_report["invalid_claims"]
+                    > normalized_report["claims_count"]
+                ):
+                    raise ValueError(
+                        "Os contadores de afirmações excedem o total informado."
+                    )
+
+            if all(field in normalized_report for field in counter_fields[3:]):
+                if (
+                    normalized_report["valid_references"]
+                    + normalized_report["invalid_references"]
+                    > normalized_report["reference_count"]
+                ):
+                    raise ValueError(
+                        "Os contadores de referências excedem o total informado."
+                    )
+
+            raw_differences = normalized_report.get("differences", [])
+
+            if isinstance(raw_differences, list):
+                normalized_report["differences"] = [
+                    difference.strip()
+                    for difference in raw_differences
+                    if isinstance(difference, str) and difference.strip()
+                ]
+            else:
+                normalized_report["differences"] = []
+
+            return normalized_report
+
+        except Exception as exc:
+            logger.exception(
+                "Falha na validação das evidências da resposta SQL",
+                extra={
+                    "event": "evaluation_answer_evidence_failed",
+                    "analysis_id": analysis.get("analysis_id"),
+                },
+            )
+
+            return {
+                "status": "error",
+                "claims_count": 0,
+                "valid_claims": 0,
+                "invalid_claims": 0,
+                "reference_count": 0,
+                "valid_references": 0,
+                "invalid_references": 0,
+                "claims_supported": False,
+                "answer_numeric_values": [],
+                "unsupported_numeric_values": [],
+                "uncovered_numeric_values": [],
+                "error_type": type(exc).__name__,
+                "differences": [
+                    (
+                        "Erro interno durante a validação das evidências: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                ],
+            }
+
+    @staticmethod
+    def _attach_sql_answer_evidence(
+        result: EvaluationCaseResult,
+        evidence_report: Mapping[str, Any],
+    ) -> EvaluationCaseResult:
+        """Anexa a validação das afirmações ao resultado SQL.
+
+        Comportamento:
+        - verified: preserva o resultado original.
+        - not_evaluated: mantém compatibilidade com análises legadas.
+        - failed: reprova o cenário sem apagar o score SQL.
+        - error: registra uma falha operacional de validação.
+
+        A pontuação original continua representando exclusivamente
+        a comparação entre os resultados SQL esperados e obtidos.
+        """
+
+        report = deepcopy(dict(evidence_report))
+
+        evidence_status = report.get("status")
+
+        # Normaliza diferenças mesmo quando o relatório veio de
+        # uma implementação de avaliador alternativa.
+        raw_differences = report.get("differences", [])
+
+        if isinstance(raw_differences, list):
+            differences = [
+                difference.strip()
+                for difference in raw_differences
+                if isinstance(difference, str) and difference.strip()
+            ]
+        else:
+            differences = []
+
+        report["differences"] = differences
+
+        result.metadata.update(
+            {
+                "answer_evidence_validation": report,
+                "answer_evidence_status": evidence_status,
+                "answer_claims_supported": report.get("claims_supported"),
+            }
+        )
+
+        # ------------------------------------------------------
+        # EVIDÊNCIAS INVÁLIDAS
+        # ------------------------------------------------------
+
+        if evidence_status == "failed":
+            result.metadata.setdefault(
+                "sql_result_status_before_evidence",
+                result.status,
+            )
+
+            result.metadata.setdefault(
+                "sql_result_score_before_evidence",
+                result.score,
+            )
+
+            if result.status != "error":
+                result.status = "failed"
+
+            for difference in differences:
+                message = f"Fundamentação da resposta: {difference}"
+
+                if message not in result.differences:
+                    result.differences.append(message)
+
+            if not differences:
+                message = (
+                    "Fundamentação da resposta: "
+                    "as evidências não passaram na validação determinística."
+                )
+
+                if message not in result.differences:
+                    result.differences.append(message)
+
+        # ------------------------------------------------------
+        # ERRO INTERNO DE VALIDAÇÃO
+        # ------------------------------------------------------
+
+        elif evidence_status == "error":
+            if result.status != "error":
+                result.metadata.setdefault(
+                    "sql_result_status_before_evidence",
+                    result.status,
+                )
+
+                result.metadata.setdefault(
+                    "sql_result_score_before_evidence",
+                    result.score,
+                )
+
+                result.status = "error"
+
+            result.error = (
+                result.error or "Falha operacional durante a validação das evidências."
+            )
+
+        # ------------------------------------------------------
+        # EVIDÊNCIAS VÁLIDAS OU NÃO AVALIADAS
+        # ------------------------------------------------------
+
+        return result
+
+    # ==========================================================
+    # CONTEXTO DO RESULTADO COMPORTAMENTAL
+    # ==========================================================
+
+    @staticmethod
+    def _attach_behavior_metadata(
+        result: EvaluationCaseResult,
+        *,
+        case: EvaluationCase,
+        analysis: Mapping[str, Any],
+        provider: str,
+        model: str | None,
+        analysis_id: str,
+        duration_ms: float,
+        llm_usage: dict[str, Any],
+    ) -> EvaluationCaseResult:
+        """Anexa contexto operacional e evidências comportamentais.
+
+        Preserva:
+        - Identificação do comportamento observado.
+        - Justificativa e pergunta de esclarecimento.
+        - Limitações e informações sustentadas.
+        - Indicador de execução SQL.
+        - Resposta original do agente.
+        - Resultado individual de cada critério.
+        - Contagem e percentual de critérios aprovados.
+
+        O snapshot de métricas LLM permanece disponível nos metadados.
+        A estimativa de custos é transferida para o campo próprio
+        do EvaluationCaseResult.
+        """
+
+        raw_behavior = analysis.get("behavior")
+
+        behavior = raw_behavior if isinstance(raw_behavior, Mapping) else {}
+
+        observed_behavior = behavior.get("type")
+
+        # ------------------------------------------------------
+        # NORMALIZAÇÃO DAS EVIDÊNCIAS
+        # ------------------------------------------------------
+
+        def normalize_text(value: Any) -> str:
+            """Normaliza campos textuais sem alterar seu conteúdo."""
+
+            return value.strip() if isinstance(value, str) else ""
+
+        raw_limitations = behavior.get("limitations")
+
+        limitations = (
+            deepcopy(raw_limitations) if isinstance(raw_limitations, list) else []
+        )
+
+        raw_supported_information = behavior.get("supported_information")
+
+        supported_information = (
+            deepcopy(raw_supported_information)
+            if isinstance(raw_supported_information, list)
+            else []
+        )
+
+        behavior_evidence = {
+            "type": observed_behavior,
+            "reason": normalize_text(behavior.get("reason")),
+            "clarification_question": normalize_text(
+                behavior.get("clarification_question")
+            ),
+            "limitations": limitations,
+            "supported_information": supported_information,
+            "sql_executed": behavior.get("sql_executed") is True,
+        }
+
+        # ------------------------------------------------------
+        # RESPOSTA ORIGINAL
+        # ------------------------------------------------------
+
+        answer = analysis.get("answer")
+
+        # ------------------------------------------------------
+        # RESULTADOS DOS CRITÉRIOS COMPORTAMENTAIS
+        # ------------------------------------------------------
+
+        raw_criteria_results = result.metadata.get(
+            "criteria_results",
+            {},
+        )
+
+        behavior_checks = (
+            deepcopy(dict(raw_criteria_results))
+            if isinstance(raw_criteria_results, Mapping)
+            else {}
+        )
+
+        passed_checks = sum(check is True for check in behavior_checks.values())
+
+        total_checks = len(behavior_checks)
+
+        behavior_pass_rate = (
+            round(
+                (passed_checks / total_checks) * 100,
+                2,
+            )
+            if total_checks
+            else 0.0
+        )
+
+        # ------------------------------------------------------
+        # ALIASES DE EVIDÊNCIAS
+        # ------------------------------------------------------
+
+        raw_answer_evidence = result.metadata.get(
+            "answer_evidence_validation",
+            analysis.get("answer_evidence_validation"),
+        )
+
+        answer_evidence_status = result.metadata.get("answer_evidence_status")
+        answer_claims_supported = result.metadata.get("answer_claims_supported")
+
+        if isinstance(raw_answer_evidence, Mapping):
+            answer_evidence_status = raw_answer_evidence.get(
+                "status",
+                answer_evidence_status,
+            )
+
+            answer_claims_supported = raw_answer_evidence.get(
+                "claims_supported",
+                answer_claims_supported,
+            )
+
+        if answer_claims_supported is not None and not isinstance(
+            answer_claims_supported,
+            bool,
+        ):
+            answer_claims_supported = None
+
+        # ------------------------------------------------------
+        # RASTREABILIDADE OPERACIONAL
+        # ------------------------------------------------------
+
+        result_fields = {
+            "analysis_id": analysis_id,
+            "provider": provider,
+            "model": model,
+            "duration_ms": duration_ms,
+            "cache_hit": analysis.get("cache_hit"),
+        }
+
+        for field_name, value in result_fields.items():
+            if hasattr(result, field_name):
+                setattr(
+                    result,
+                    field_name,
+                    value,
+                )
+
+        result.token_cost_estimate = EvaluationRunner._extract_token_cost_estimate(
+            llm_usage
+        )
+
+        # ------------------------------------------------------
+        # METADADOS FINAIS
+        # ------------------------------------------------------
+
+        result.metadata.update(
+            {
+                "category": case.category,
+                "evaluation_type": case.evaluation_type,
+                "expected_behavior": case.expected_behavior,
+                "observed_behavior": observed_behavior,
+                # Evidências originais do comportamento.
+                "behavior_evidence": behavior_evidence,
+                # Resposta textual original.
+                "answer": answer,
+                # Resultado individual dos critérios.
+                "behavior_checks": behavior_checks,
+                # Consolidação dos critérios.
+                "passed_checks": passed_checks,
+                "total_checks": total_checks,
+                "behavior_pass_rate": behavior_pass_rate,
+                # Aliases padronizados de evidências.
+                "answer_evidence_status": answer_evidence_status,
+                "answer_claims_supported": answer_claims_supported,
+                # Cenários comportamentais não executam
+                # SQL de referência.
+                "reference_sql_executed": False,
+                "reference_sql_ms": None,
+                # Modo de análise.
+                "analysis_mode": analysis.get(
+                    "analysis_mode",
+                    "single_query",
+                ),
+                # Identificação da análise.
+                "agent_analysis_id": analysis.get("analysis_id") or analysis_id,
+                # Resultados e execução.
+                "agent_total_results": analysis.get("total_results"),
+                "agent_step_count": len(
+                    analysis.get("steps", [])
+                    if isinstance(analysis.get("steps"), list)
+                    else []
+                ),
+                "agent_partial_success": analysis.get(
+                    "partial_success",
+                    False,
+                ),
+                # Métricas individuais do provedor.
+                "llm_metrics": llm_usage,
+            }
+        )
+
+        return result
+
+    # ==========================================================
     # ERROS OPERACIONAIS
     # ==========================================================
 
@@ -491,19 +1114,44 @@ class EvaluationRunner:
         duration_ms: float | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> EvaluationCaseResult:
-        """Monta um resultado de avaliação com falha operacional."""
+        """Monta um resultado de avaliação com falha operacional.
 
-        result_metadata = {
-            "category": case.category,
-            "phase": phase,
-            "error_type": type(error).__name__,
-        }
+        Quando as métricas LLM já foram coletadas, preserva também
+        a estimativa de custos no campo próprio do resultado.
+
+        Campos essenciais do erro não podem ser sobrescritos
+        por metadados adicionais.
+        """
+
+        result_metadata = {}
+
+        if metadata:
+            result_metadata.update(metadata)
+
+        # Campos controlados pelo runner são aplicados por último
+        # para impedir sobrescrita acidental ou externa.
+        result_metadata.update(
+            {
+                "category": case.category,
+                "evaluation_type": case.evaluation_type,
+                "phase": phase,
+                "error_type": type(error).__name__,
+            }
+        )
 
         if case.expected_analysis_mode is not None:
             result_metadata["expected_analysis_mode"] = case.expected_analysis_mode
 
-        if metadata:
-            result_metadata.update(metadata)
+        if case.expected_behavior is not None:
+            result_metadata["expected_behavior"] = case.expected_behavior
+
+        llm_usage = result_metadata.get("llm_metrics")
+
+        token_cost_estimate = (
+            EvaluationRunner._extract_token_cost_estimate(llm_usage)
+            if isinstance(llm_usage, Mapping)
+            else None
+        )
 
         return EvaluationCaseResult(
             case_id=case.case_id,
@@ -515,6 +1163,7 @@ class EvaluationRunner:
             duration_ms=duration_ms,
             error=str(error),
             metadata=result_metadata,
+            token_cost_estimate=token_cost_estimate,
         )
 
     # ==========================================================
@@ -525,7 +1174,11 @@ class EvaluationRunner:
     def _finalize_report(
         report: EvaluationRunReport,
     ) -> EvaluationRunReport:
-        """Calcula métricas e finaliza o relatório."""
+        """Calcula métricas e finaliza o relatório.
+
+        O resumo de custos é calculado a partir dos resultados
+        individuais por EvaluationRunReport.token_cost_summary.
+        """
 
         report.metadata["metrics"] = calculate_evaluation_metrics(report.results)
 
@@ -542,58 +1195,67 @@ class EvaluationRunner:
         case: EvaluationCase,
         analyst: Any,
     ) -> EvaluationCaseResult:
-        """Executa um cenário individual."""
+        """Executa um cenário SQL ou comportamental."""
+
+        is_behavioral_case = case.evaluation_type != "sql_result"
+
+        reference_sql_ms: float | None = None
+        expected_rows: list[dict[str, Any]] | None = None
 
         # ------------------------------------------------------
         # 1. Calcular o resultado de referência.
         #
-        # A consulta de referência não pertence ao contexto
-        # de métricas LLM e não deve contabilizar consumo de IA.
+        # Somente cenários SQL executam a referência.
+        # Cenários comportamentais não possuem SQL esperado.
         # ------------------------------------------------------
 
-        reference_start = perf_counter()
+        if not is_behavioral_case:
+            reference_start = perf_counter()
 
-        try:
-            expected_rows = self.reference_executor.execute(case.reference_sql)
+            try:
+                expected_rows = self.reference_executor.execute(case.reference_sql)
 
-            expected_rows = self._validate_analysis_rows(
-                expected_rows,
-                "reference_sql",
-            )
+                expected_rows = self._validate_analysis_rows(
+                    expected_rows,
+                    "reference_sql",
+                )
 
-            reference_sql_ms = round(
-                (perf_counter() - reference_start) * 1000,
-                2,
-            )
+                reference_sql_ms = round(
+                    (perf_counter() - reference_start) * 1000,
+                    2,
+                )
 
-        except Exception as exc:
-            reference_sql_ms = round(
-                (perf_counter() - reference_start) * 1000,
-                2,
-            )
+            except Exception as exc:
+                reference_sql_ms = round(
+                    (perf_counter() - reference_start) * 1000,
+                    2,
+                )
 
-            logger.exception(
-                "Falha ao executar SQL de referência",
-                extra={
-                    "event": "evaluation_reference_sql_failed",
-                    "case_id": case.case_id,
-                },
-            )
+                logger.exception(
+                    "Falha ao executar SQL de referência",
+                    extra={
+                        "event": "evaluation_reference_sql_failed",
+                        "case_id": case.case_id,
+                    },
+                )
 
-            return self._error_result(
-                case,
-                exc,
-                phase="reference_sql",
-                provider=self.provider_name,
-                model=getattr(analyst, "model", None),
-                duration_ms=reference_sql_ms,
-            )
+                return self._error_result(
+                    case,
+                    exc,
+                    phase="reference_sql",
+                    provider=self.provider_name,
+                    model=getattr(analyst, "model", None),
+                    duration_ms=reference_sql_ms,
+                    metadata={
+                        "reference_sql_executed": True,
+                    },
+                )
 
         # ------------------------------------------------------
         # 2. Executar a pergunta no agente.
         #
         # Cada cenário recebe um contexto independente.
-        # Isso impede que tokens e latências de cenários
+        # Isso impede que tokens, custos e latências de cenários
         # anteriores sejam incorporados ao cenário atual.
         # ------------------------------------------------------
 
@@ -635,6 +1297,7 @@ class EvaluationRunner:
             )
 
             error_metadata = {
+                "reference_sql_executed": not is_behavioral_case,
                 "reference_sql_ms": reference_sql_ms,
             }
 
@@ -678,16 +1341,91 @@ class EvaluationRunner:
                 model=getattr(analyst, "model", None),
                 duration_ms=analysis_duration_ms,
                 metadata={
+                    "reference_sql_executed": not is_behavioral_case,
                     "reference_sql_ms": reference_sql_ms,
                     "llm_metrics": llm_usage,
                 },
             )
 
-        actual_model = analysis.get("model") or getattr(analyst, "model", None)
+        # ------------------------------------------------------
+        # 4. Validar o modo de análise retornado pelo agente.
+        # ------------------------------------------------------
 
-        actual_provider = analysis.get("provider") or self.provider_name
+        analysis_mode = analysis.get(
+            "analysis_mode",
+            "single_query",
+        )
 
-        actual_analysis_id = analysis.get("analysis_id") or analysis_tracking_id
+        if (
+            not isinstance(analysis_mode, str)
+            or analysis_mode not in SUPPORTED_ANALYSIS_MODES
+        ):
+            error = ValueError(
+                f"Modo de análise retornado pelo agente não suportado: "
+                f"'{analysis_mode}'."
+            )
+
+            llm_usage = self._snapshot_llm_metrics(
+                analysis_metrics,
+                provider=self.provider_name,
+                model=getattr(analyst, "model", None),
+                analysis_id=analysis_tracking_id,
+            )
+
+            return self._error_result(
+                case,
+                error,
+                phase="analysis_validation",
+                provider=self.provider_name,
+                model=getattr(analyst, "model", None),
+                duration_ms=analysis_duration_ms,
+                metadata={
+                    "analysis_mode": analysis_mode,
+                    "reference_sql_executed": not is_behavioral_case,
+                    "reference_sql_ms": reference_sql_ms,
+                    "llm_metrics": llm_usage,
+                },
+            )
+
+        # ------------------------------------------------------
+        # 5. Validar a identidade retornada pelo agente.
+        # ------------------------------------------------------
+
+        try:
+            actual_provider, actual_model, actual_analysis_id = (
+                self._resolve_analysis_identity(
+                    analysis,
+                    default_provider=self.provider_name,
+                    default_model=getattr(analyst, "model", None),
+                    default_analysis_id=analysis_tracking_id,
+                )
+            )
+
+        except (TypeError, ValueError) as exc:
+            llm_usage = self._snapshot_llm_metrics(
+                analysis_metrics,
+                provider=self.provider_name,
+                model=getattr(analyst, "model", None),
+                analysis_id=analysis_tracking_id,
+            )
+
+            return self._error_result(
+                case,
+                exc,
+                phase="analysis_validation",
+                provider=self.provider_name,
+                model=getattr(analyst, "model", None),
+                duration_ms=analysis_duration_ms,
+                metadata={
+                    "analysis_mode": analysis_mode,
+                    "reported_provider": analysis.get("provider"),
+                    "reported_model": analysis.get("model"),
+                    "reported_analysis_id": analysis.get("analysis_id"),
+                    "reference_sql_executed": not is_behavioral_case,
+                    "reference_sql_ms": reference_sql_ms,
+                    "llm_metrics": llm_usage,
+                },
+            )
 
         llm_usage = self._snapshot_llm_metrics(
             analysis_metrics,
@@ -696,15 +1434,107 @@ class EvaluationRunner:
             analysis_id=actual_analysis_id,
         )
 
-        analysis_mode = analysis.get(
-            "analysis_mode",
-            "single_query",
-        )
+        # Extrai uma cópia independente do custo para o resultado.
+        token_cost_estimate = self._extract_token_cost_estimate(llm_usage)
+
+        # ------------------------------------------------------
+        # 6. Avaliação comportamental.
+        #
+        # Este caminho é independente da comparação SQL.
+        #
+        # Não executa SQL de referência.
+        # Não extrai resultados tabulares.
+        # Não aplica expectativas single_query/multi_query.
+        # ------------------------------------------------------
+
+        if is_behavioral_case:
+            try:
+                evaluation_result = self.evaluator.evaluate_behavior(
+                    case,
+                    analysis,
+                )
+
+            except Exception as exc:
+                logger.exception(
+                    "Falha durante a avaliação comportamental",
+                    extra={
+                        "event": "evaluation_behavior_evaluation_failed",
+                        "case_id": case.case_id,
+                        "provider": actual_provider,
+                        "model": actual_model,
+                    },
+                )
+
+                return self._error_result(
+                    case,
+                    exc,
+                    phase="behavior_evaluation",
+                    provider=actual_provider,
+                    model=actual_model,
+                    duration_ms=analysis_duration_ms,
+                    metadata={
+                        "reference_sql_executed": False,
+                        "reference_sql_ms": None,
+                        "analysis_mode": analysis_mode,
+                        "agent_analysis_id": actual_analysis_id,
+                        "llm_metrics": llm_usage,
+                    },
+                )
+
+            evaluation_result = self._attach_behavior_metadata(
+                evaluation_result,
+                case=case,
+                analysis=analysis,
+                provider=actual_provider,
+                model=actual_model,
+                analysis_id=actual_analysis_id,
+                duration_ms=analysis_duration_ms,
+                llm_usage=llm_usage,
+            )
+
+            logger.info(
+                "Cenário comportamental concluído",
+                extra={
+                    "event": "evaluation_behavior_case_completed",
+                    "case_id": case.case_id,
+                    "evaluation_type": case.evaluation_type,
+                    "expected_behavior": case.expected_behavior,
+                    "observed_behavior": (
+                        evaluation_result.metadata.get("observed_behavior")
+                    ),
+                    "status": evaluation_result.status,
+                    "score": evaluation_result.score,
+                    "provider": actual_provider,
+                    "model": actual_model,
+                    "duration_ms": analysis_duration_ms,
+                    "llm_requests": self._get_llm_usage_count(
+                        llm_usage,
+                        "requests",
+                        "total",
+                    ),
+                    "llm_tokens": self._get_llm_usage_count(
+                        llm_usage,
+                        "tokens",
+                        "total",
+                    ),
+                    "estimated_cost_usd": evaluation_result.estimated_cost_usd,
+                },
+            )
+
+            return evaluation_result
+
+        # A partir daqui, o caminho é exclusivamente SQL.
+        # expected_rows foi calculado no início do método.
+        assert expected_rows is not None
+
+        # Valida a fundamentação textual independentemente
+        # da comparação dos resultados SQL.
+        answer_evidence_validation = self._validate_sql_answer_evidence(analysis)
 
         extraction_metadata: dict[str, Any] = {}
 
         # ------------------------------------------------------
-        # 4. Extrair resultados simples ou compostos.
+        # 7. Extrair resultados simples ou compostos.
         # ------------------------------------------------------
 
         try:
@@ -751,18 +1581,41 @@ class EvaluationRunner:
                         error=reason,
                         metadata={
                             "category": case.category,
+                            "evaluation_type": case.evaluation_type,
                             "analysis_mode": analysis_mode,
+                            "reference_sql_executed": True,
                             "reference_sql_ms": reference_sql_ms,
                             "llm_metrics": llm_usage,
                             **extraction_metadata,
                         },
+                        token_cost_estimate=token_cost_estimate,
                     )
 
-                    return self._apply_analysis_mode_expectation(
+                    result = self._apply_analysis_mode_expectation(
                         result,
                         case,
                         analysis_mode,
                     )
+
+                    result = self._attach_sql_answer_evidence(
+                        result,
+                        answer_evidence_validation,
+                    )
+
+                    logger.info(
+                        "Cenário não pôde ser comparado",
+                        extra={
+                            "event": "evaluation_case_not_comparable",
+                            "case_id": case.case_id,
+                            "status": result.status,
+                            "reason": reason,
+                            "provider": actual_provider,
+                            "model": actual_model,
+                            "estimated_cost_usd": result.estimated_cost_usd,
+                        },
+                    )
+
+                    return result
 
             else:
                 actual_rows = self._validate_analysis_rows(
@@ -788,19 +1641,25 @@ class EvaluationRunner:
                 duration_ms=analysis_duration_ms,
                 metadata={
                     "analysis_mode": analysis_mode,
+                    "reference_sql_executed": True,
                     "reference_sql_ms": reference_sql_ms,
                     "llm_metrics": llm_usage,
                 },
             )
 
-            return self._apply_analysis_mode_expectation(
+            result = self._apply_analysis_mode_expectation(
                 result,
                 case,
                 analysis_mode,
             )
 
+            return self._attach_sql_answer_evidence(
+                result,
+                answer_evidence_validation,
+            )
+
         # ------------------------------------------------------
-        # 5. Comparar resultado real com referência.
+        # 8. Comparar resultado real com referência.
         # ------------------------------------------------------
 
         try:
@@ -808,7 +1667,7 @@ class EvaluationRunner:
                 case=case,
                 expected_rows=expected_rows,
                 actual_rows=actual_rows,
-                analysis_id=analysis.get("analysis_id"),
+                analysis_id=actual_analysis_id,
                 provider=actual_provider,
                 model=actual_model,
                 duration_ms=analysis_duration_ms,
@@ -833,27 +1692,37 @@ class EvaluationRunner:
                 duration_ms=analysis_duration_ms,
                 metadata={
                     "analysis_mode": analysis_mode,
+                    "reference_sql_executed": True,
                     "reference_sql_ms": reference_sql_ms,
                     "llm_metrics": llm_usage,
                 },
             )
 
-            return self._apply_analysis_mode_expectation(
+            result = self._apply_analysis_mode_expectation(
                 result,
                 case,
                 analysis_mode,
             )
 
+            return self._attach_sql_answer_evidence(
+                result,
+                answer_evidence_validation,
+            )
+
         # ------------------------------------------------------
-        # 6. Registrar metadados operacionais e consumo de LLM.
+        # 9. Registrar metadados operacionais e consumo de LLM.
         # ------------------------------------------------------
+
+        evaluation_result.token_cost_estimate = token_cost_estimate
 
         evaluation_result.metadata.update(
             {
                 "category": case.category,
+                "evaluation_type": case.evaluation_type,
+                "reference_sql_executed": True,
                 "analysis_mode": analysis_mode,
                 "reference_sql_ms": reference_sql_ms,
-                "agent_analysis_id": analysis.get("analysis_id"),
+                "agent_analysis_id": actual_analysis_id,
                 "agent_total_results": analysis.get("total_results"),
                 "agent_step_count": len(
                     analysis.get("steps", [])
@@ -869,6 +1738,29 @@ class EvaluationRunner:
             }
         )
 
+        # ------------------------------------------------------
+        # 10. Verificar o modo de análise esperado.
+        # ------------------------------------------------------
+
+        evaluation_result = self._apply_analysis_mode_expectation(
+            evaluation_result,
+            case,
+            analysis_mode,
+        )
+
+        # ------------------------------------------------------
+        # 11. Validar e anexar as evidências da resposta.
+        # ------------------------------------------------------
+
+        evaluation_result = self._attach_sql_answer_evidence(
+            evaluation_result,
+            answer_evidence_validation,
+        )
+
+        # ------------------------------------------------------
+        # 12. Registrar resultado final.
+        # ------------------------------------------------------
+
         logger.info(
             "Cenário de avaliação concluído",
             extra={
@@ -879,21 +1771,27 @@ class EvaluationRunner:
                 "provider": actual_provider,
                 "model": actual_model,
                 "duration_ms": analysis_duration_ms,
-                "llm_requests": llm_usage["requests"]["total"],
-                "llm_tokens": llm_usage["tokens"]["total"],
+                "llm_requests": self._get_llm_usage_count(
+                    llm_usage,
+                    "requests",
+                    "total",
+                ),
+                "llm_tokens": self._get_llm_usage_count(
+                    llm_usage,
+                    "tokens",
+                    "total",
+                ),
+                "estimated_cost_usd": evaluation_result.estimated_cost_usd,
+                "answer_evidence_status": (
+                    evaluation_result.metadata.get("answer_evidence_status")
+                ),
+                "answer_claims_supported": (
+                    evaluation_result.metadata.get("answer_claims_supported")
+                ),
             },
         )
 
-        # ------------------------------------------------------
-        # 7. Verificar se o modo executado corresponde
-        #    à expectativa definida no cenário.
-        # ------------------------------------------------------
-
-        return self._apply_analysis_mode_expectation(
-            evaluation_result,
-            case,
-            analysis_mode,
-        )
+        return evaluation_result
 
     # ==========================================================
     # EXECUÇÃO COMPLETA
@@ -925,6 +1823,21 @@ class EvaluationRunner:
         if not all(isinstance(case, EvaluationCase) for case in evaluation_cases):
             raise TypeError("Todos os cenários devem ser EvaluationCase.")
 
+        # Valida as expectativas antes de iniciar chamadas ao agente.
+        # Um dataset inválido deve falhar explicitamente, sem produzir
+        # resultados enganosos de divergência de modo.
+        for case in evaluation_cases:
+            expected_mode = case.expected_analysis_mode
+
+            if expected_mode is not None and (
+                not isinstance(expected_mode, str)
+                or expected_mode not in SUPPORTED_ANALYSIS_MODES
+            ):
+                raise ValueError(
+                    f"O cenário '{case.case_id}' possui um modo de análise "
+                    f"esperado não suportado: '{expected_mode}'."
+                )
+
         report = EvaluationRunReport(
             run_id=run_id or str(uuid4()),
             provider=self.provider_name,
@@ -933,6 +1846,12 @@ class EvaluationRunner:
                     str(self.dataset_path) if self.dataset_path is not None else None
                 ),
                 "scenario_count": len(evaluation_cases),
+                "sql_scenario_count": sum(
+                    case.evaluation_type == "sql_result" for case in evaluation_cases
+                ),
+                "behavioral_scenario_count": sum(
+                    case.evaluation_type != "sql_result" for case in evaluation_cases
+                ),
             },
         )
 
@@ -982,6 +1901,10 @@ class EvaluationRunner:
                 "provider": self.provider_name,
                 "model": report.model,
                 "scenario_count": len(evaluation_cases),
+                "sql_scenario_count": report.metadata["sql_scenario_count"],
+                "behavioral_scenario_count": report.metadata[
+                    "behavioral_scenario_count"
+                ],
             },
         )
 
@@ -995,15 +1918,40 @@ class EvaluationRunner:
                     "event": "evaluation_case_started",
                     "run_id": report.run_id,
                     "case_id": case.case_id,
+                    "evaluation_type": case.evaluation_type,
                     "position": index,
                     "total": len(evaluation_cases),
                 },
             )
 
-            result = self._run_case(
-                case=case,
-                analyst=analyst,
-            )
+            try:
+                result = self._run_case(
+                    case=case,
+                    analyst=analyst,
+                )
+
+            except Exception as exc:
+                # Última barreira de isolamento:
+                # uma exceção inesperada em um cenário não pode
+                # interromper a execução dos cenários seguintes.
+                logger.exception(
+                    "Falha inesperada durante a execução do cenário",
+                    extra={
+                        "event": "evaluation_case_unhandled_exception",
+                        "run_id": report.run_id,
+                        "case_id": case.case_id,
+                        "position": index,
+                        "provider": self.provider_name,
+                    },
+                )
+
+                result = self._error_result(
+                    case,
+                    exc,
+                    phase="case_execution",
+                    provider=self.provider_name,
+                    model=report.model,
+                )
 
             report.results.append(result)
 
@@ -1025,6 +1973,8 @@ class EvaluationRunner:
                 "skipped_cases": report.skipped_cases,
                 "pass_rate": report.pass_rate,
                 "duration_ms": report.duration_ms,
+                "estimated_cost_usd": report.estimated_cost_usd,
+                "cost_is_complete": report.token_cost_summary["is_complete"],
             },
         )
 
