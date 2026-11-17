@@ -1,5 +1,7 @@
-﻿"use client";
+﻿
+"use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import AnalyticsChart from "@/components/analytics-chart";
 import AgentTimeline from "@/components/agent-timeline";
@@ -1170,6 +1172,14 @@ export default function Home() {
             <span>◷</span>
             Histórico
           </button>
+
+          <Link
+            href="/evaluation"
+            className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm text-zinc-400 transition hover:bg-white/[0.04] hover:text-zinc-200"
+          >
+            <span>◈</span>
+            Evaluation Engine
+          </Link>
         </div>
 
         <div className="mt-8 px-5">
@@ -2153,7 +2163,7 @@ export default function Home() {
                                       ? `A análise foi concluída parcialmente: ${analysis.unsupported_queries} consulta(s) não suportada(s) pelos dados e ${analysis.failed_queries} falha(s) operacional(is). Os resultados válidos foram preservados.`
                                       : analysis.unsupported_queries === 1
                                         ? "A análise foi concluída parcialmente. Uma consulta não pôde ser realizada devido a uma limitação dos dados disponíveis. Os demais resultados foram preservados."
-                                        : `A análise foi concluída parcialmente. ${analysis.unsupported_queries} consultas não puderam ser realizadas devido a limita??es dos dados disponíveis. Os demais resultados foram preservados.`
+                                        : `A análise foi concluída parcialmente. ${analysis.unsupported_queries} consultas não puderam ser realizadas devido a limitações dos dados disponíveis. Os demais resultados foram preservados.`
                                     : "A análise foi concluída parcialmente. Uma ou mais consultas apresentaram falhas operacionais, mas os resultados das demais foram preservados."}
                                 </p>
                               )}

@@ -22,6 +22,7 @@ from ai_analyst.agent.capability_validator import (
 )
 from ai_analyst.agent.query_planner import QueryPlanError
 from ai_analyst.agent.sql_executor import SQLExecutionTimeoutError
+from ai_analyst.api.evaluation import router as evaluation_router
 from ai_analyst.data.db import connect_readonly
 from ai_analyst.data.history import AnalysisHistory
 from ai_analyst.data.schema import COLUMN_DOCS, TABLE_DOCS
@@ -114,6 +115,9 @@ app = FastAPI(
     description="API de análise de negócios utilizando inteligência artificial.",
     version="1.0.0",
 )
+
+# Integra as rotas de consulta e comparação do AI Evaluation Engine.
+app.include_router(evaluation_router)
 
 
 app.add_middleware(
