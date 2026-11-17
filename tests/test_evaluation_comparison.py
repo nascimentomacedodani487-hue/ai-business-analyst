@@ -346,6 +346,68 @@ def test_comparison_rejects_different_dataset_case_counts(
     assert result["compatibility"]["comparable"] is False
 
 
+def test_comparison_rejects_different_dataset_versions(
+    comparator,
+    baseline,
+    candidate,
+):
+    candidate["dataset"]["version"] = 2
+
+    result = comparator.compare(baseline, candidate)
+
+    assert result["compatibility"]["comparable"] is False
+
+    assert "dataset_version_mismatch" in result["compatibility"]["reasons"]
+
+    assert result["summary"]["status"] == "incompatible"
+
+
+@pytest.mark.parametrize(
+    "invalid_version",
+    [
+        None,
+        True,
+        False,
+        "1",
+        0,
+        -1,
+        1.5,
+    ],
+)
+def test_comparison_rejects_invalid_dataset_versions(
+    comparator,
+    baseline,
+    candidate,
+    invalid_version,
+):
+    candidate["dataset"]["version"] = invalid_version
+
+    with pytest.raises(ValueError, match="dataset.version"):
+        comparator.compare(baseline, candidate)
+
+
+def test_comparison_rejects_missing_dataset_version(
+    comparator,
+    baseline,
+    candidate,
+):
+    candidate["dataset"].pop("version")
+
+    with pytest.raises(ValueError, match="dataset.version"):
+        comparator.compare(baseline, candidate)
+
+
+def test_comparison_rejects_invalid_baseline_dataset_version(
+    comparator,
+    baseline,
+    candidate,
+):
+    baseline["dataset"]["version"] = True
+
+    with pytest.raises(ValueError, match="dataset.version"):
+        comparator.compare(baseline, candidate)
+
+
 # ==========================================================
 # COMPATIBILIDADE DE PROVEDOR E MODELO
 # ==========================================================
@@ -385,6 +447,85 @@ def test_comparison_compares_only_matching_providers(
     assert result["providers"]["openai"]["status"] == "baseline_only"
 
     assert result["providers"]["anthropic"]["status"] == "candidate_only"
+
+
+def test_comparison_resolves_provider_keys_after_normalization(
+    comparator,
+    baseline,
+    candidate,
+):
+    for report in (baseline, candidate):
+        report["configuration"]["providers"] = [
+            " Gemini ",
+            " OPENAI ",
+        ]
+
+        report["provider_runs"] = {
+            f" {provider.upper()} ": value
+            for provider, value in report["provider_runs"].items()
+        }
+
+        report["comparison"]["by_provider"] = {
+            f" {provider.upper()} ": value
+            for provider, value in report["comparison"]["by_provider"].items()
+        }
+
+    result = comparator.compare(baseline, candidate)
+
+    assert result["providers"]["gemini"]["status"] == "compared"
+
+    assert result["providers"]["openai"]["status"] == "compared"
+
+    assert result["providers"]["gemini"]["baseline_model"] == "gemini-2.5-flash"
+
+
+def test_comparison_rejects_duplicate_provider_keys_after_normalization(
+    comparator,
+    baseline,
+    candidate,
+):
+    baseline["provider_runs"]["Gemini"] = deepcopy(baseline["provider_runs"]["gemini"])
+
+    with pytest.raises(ValueError, match="duplicado"):
+        comparator.compare(baseline, candidate)
+
+
+def test_comparison_rejects_duplicate_comparison_keys_after_normalization(
+    comparator,
+    baseline,
+    candidate,
+):
+    baseline["comparison"]["by_provider"][" GEMINI "] = deepcopy(
+        baseline["comparison"]["by_provider"]["gemini"]
+    )
+
+    with pytest.raises(ValueError, match="duplicado"):
+        comparator.compare(baseline, candidate)
+
+
+def test_comparison_rejects_duplicate_configured_providers_after_normalization(
+    comparator,
+    baseline,
+    candidate,
+):
+    baseline["configuration"]["providers"] = [
+        "gemini",
+        " GEMINI ",
+    ]
+
+    with pytest.raises(ValueError, match="duplicado"):
+        comparator.compare(baseline, candidate)
+
+
+def test_comparison_rejects_invalid_provider_mapping_keys(
+    comparator,
+    baseline,
+    candidate,
+):
+    baseline["provider_runs"][None] = {}
+
+    with pytest.raises(ValueError, match="provedor inválido"):
+        comparator.compare(baseline, candidate)
 
 
 def test_comparison_does_not_compare_different_models(
@@ -956,5 +1097,23 @@ def test_comparison_rejects_invalid_thresholds():
         BenchmarkComparator(
             thresholds={
                 "average_score": float("nan"),
+            }
+        )
+
+
+def test_comparison_rejects_infinite_thresholds():
+    with pytest.raises(ValueError):
+        BenchmarkComparator(
+            thresholds={
+                "average_duration_ms": float("inf"),
+            }
+        )
+
+
+def test_comparison_rejects_unknown_threshold_metrics():
+    with pytest.raises(ValueError, match="Métrica sem suporte"):
+        BenchmarkComparator(
+            thresholds={
+                "llm_usage.cost_estimate_usd": 1.0,
             }
         )

@@ -104,14 +104,22 @@ BOUNDED_METRICS: dict[str, tuple[float, float]] = {
 
 
 def _is_valid_number(value: Any) -> bool:
-    """Verifica se um valor numérico é finito e não negativo."""
+    """Verifica se um valor numérico é finito e não negativo.
 
-    return (
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and isfinite(value)
-        and value >= 0
-    )
+    Inteiros são validados separadamente para evitar que valores
+    inteiros muito grandes causem OverflowError em isfinite().
+    """
+
+    if isinstance(value, bool):
+        return False
+
+    if isinstance(value, int):
+        return value >= 0
+
+    if isinstance(value, float):
+        return isfinite(value) and value >= 0
+
+    return False
 
 
 def _is_valid_integer(value: Any) -> bool:
@@ -169,6 +177,35 @@ def _normalize_provider(value: Any) -> str | None:
     return value.strip().lower()
 
 
+def _normalize_provider_mapping(
+    mapping: Mapping[Any, Any],
+    field_name: str,
+) -> dict[str, Any]:
+    """Normaliza as chaves de um mapeamento de provedores.
+
+    Rejeita identificadores inválidos e duplicidades que surgem
+    após a normalização de espaços e letras maiúsculas/minúsculas.
+    """
+
+    normalized_mapping: dict[str, Any] = {}
+
+    for raw_provider, value in mapping.items():
+        provider = _normalize_provider(raw_provider)
+
+        if provider is None:
+            raise ValueError(f"{field_name} contém um provedor inválido.")
+
+        if provider in normalized_mapping:
+            raise ValueError(
+                f"{field_name} contém provedor duplicado "
+                f"após normalização: '{provider}'."
+            )
+
+        normalized_mapping[provider] = value
+
+    return normalized_mapping
+
+
 def _exceeds_threshold(
     difference: float | int,
     threshold: float,
@@ -219,12 +256,17 @@ def _require_dataset(
     report: Mapping[str, Any],
     field_name: str,
 ) -> Mapping[str, Any]:
-    """Valida a presença da estrutura do dataset."""
+    """Valida a presença e a estrutura obrigatória do dataset."""
 
     dataset = report.get("dataset")
 
     if not isinstance(dataset, Mapping):
         raise ValueError(f"{field_name}.dataset deve ser um objeto de mapeamento.")
+
+    version = dataset.get("version")
+
+    if not isinstance(version, int) or isinstance(version, bool) or version <= 0:
+        raise ValueError(f"{field_name}.dataset.version deve ser um inteiro positivo.")
 
     fingerprint = dataset.get("sha256")
 
@@ -343,9 +385,9 @@ def _get_dataset_compatibility(
     ):
         reasons.append("dataset_case_count_mismatch")
 
-    baseline_version = baseline_dataset.get("version")
+    baseline_version = baseline_dataset["version"]
 
-    candidate_version = candidate_dataset.get("version")
+    candidate_version = candidate_dataset["version"]
 
     if baseline_version != candidate_version:
         reasons.append("dataset_version_mismatch")
@@ -381,36 +423,53 @@ def _get_provider_names(
             if not isinstance(configured_providers, list):
                 raise ValueError("configuration.providers deve ser uma lista.")
 
-            for provider in configured_providers:
-                normalized = _normalize_provider(provider)
+            configured_names: set[str] = set()
 
-                if normalized is None:
+            for raw_provider in configured_providers:
+                provider = _normalize_provider(raw_provider)
+
+                if provider is None:
                     raise ValueError(
                         "configuration.providers contém um provedor inválido."
                     )
 
-                providers.add(normalized)
+                if provider in configured_names:
+                    raise ValueError(
+                        "configuration.providers contém provedor duplicado "
+                        f"após normalização: '{provider}'."
+                    )
+
+                configured_names.add(provider)
+                providers.add(provider)
 
     provider_runs = report.get("provider_runs", {})
 
-    if isinstance(provider_runs, Mapping):
-        for provider in provider_runs:
-            normalized = _normalize_provider(provider)
+    if not isinstance(provider_runs, Mapping):
+        provider_runs = {}
 
-            if normalized is not None:
-                providers.add(normalized)
+    normalized_runs = _normalize_provider_mapping(
+        provider_runs,
+        "provider_runs",
+    )
+
+    providers.update(normalized_runs)
 
     comparison = report.get("comparison", {})
 
-    if isinstance(comparison, Mapping):
-        by_provider = comparison.get("by_provider", {})
+    if not isinstance(comparison, Mapping):
+        comparison = {}
 
-        if isinstance(by_provider, Mapping):
-            for provider in by_provider:
-                normalized = _normalize_provider(provider)
+    by_provider = comparison.get("by_provider", {})
 
-                if normalized is not None:
-                    providers.add(normalized)
+    if not isinstance(by_provider, Mapping):
+        by_provider = {}
+
+    normalized_comparisons = _normalize_provider_mapping(
+        by_provider,
+        "comparison.by_provider",
+    )
+
+    providers.update(normalized_comparisons)
 
     return providers
 
@@ -436,9 +495,19 @@ def _get_provider_information(
     if not isinstance(by_provider, Mapping):
         by_provider = {}
 
-    execution = provider_runs.get(provider, {})
+    normalized_runs = _normalize_provider_mapping(
+        provider_runs,
+        "provider_runs",
+    )
 
-    provider_comparison = by_provider.get(provider, {})
+    normalized_comparisons = _normalize_provider_mapping(
+        by_provider,
+        "comparison.by_provider",
+    )
+
+    execution = normalized_runs.get(provider, {})
+
+    provider_comparison = normalized_comparisons.get(provider, {})
 
     if not isinstance(execution, Mapping):
         execution = {}
@@ -636,8 +705,8 @@ def _combine_statuses(
 class BenchmarkComparator:
     """Compara dois benchmarks históricos.
 
-    A comparação só é realizada quando os fingerprints e os
-    identificadores dos cenários são compatíveis.
+    A comparação só é realizada quando os fingerprints,
+    as versões e os identificadores dos cenários são compatíveis.
 
     Métricas de provedores só são comparadas quando o provedor
     e o modelo são os mesmos nas duas execuções.
@@ -679,7 +748,21 @@ class BenchmarkComparator:
                     "um número finito e não negativo."
                 )
 
-            self.thresholds[metric_name] = float(threshold)
+            try:
+                normalized_threshold = float(threshold)
+            except (OverflowError, TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"A tolerância de '{metric_name}' deve ser "
+                    "um número finito e não negativo."
+                ) from exc
+
+            if not isfinite(normalized_threshold):
+                raise ValueError(
+                    f"A tolerância de '{metric_name}' deve ser "
+                    "um número finito e não negativo."
+                )
+
+            self.thresholds[metric_name] = normalized_threshold
 
     # ======================================================
     # MÉTRICAS DE UM PROVEDOR
@@ -943,12 +1026,14 @@ class BenchmarkComparator:
             )
 
             execution_regression = execution_status == "regression"
+
             execution_improvement = execution_status == "improvement"
 
             # Se a execução falhou ou foi recuperada, suas métricas
             # não foram comparadas. Contabilizamos o evento de execução
             # uma única vez, sem duplicar o resultado por métrica.
             has_metric_regression = "regression" in metric_statuses
+
             has_metric_improvement = "improvement" in metric_statuses
 
             if (

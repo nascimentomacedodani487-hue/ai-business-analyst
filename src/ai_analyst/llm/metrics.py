@@ -141,9 +141,7 @@ def _calculate_percentile(
     lower_value = sorted_samples[lower_index]
     upper_value = sorted_samples[upper_index]
 
-    interpolated = lower_value + (
-        upper_value - lower_value
-    ) * (position - lower_index)
+    interpolated = lower_value + (upper_value - lower_value) * (position - lower_index)
 
     return round(interpolated, 2)
 
@@ -260,10 +258,7 @@ def _record_model_cost(
 
     # O mesmo modelo pode ser executado em faixas diferentes durante
     # testes controlados. Não misture custos free e standard.
-    if (
-        existing_bucket is not None
-        and existing_bucket["pricing_tier"] != pricing_tier
-    ):
+    if existing_bucket is not None and existing_bucket["pricing_tier"] != pricing_tier:
         bucket_key = f"{model}::{pricing_tier}"
 
     bucket = model_costs.setdefault(
@@ -291,16 +286,12 @@ def _record_model_cost(
         return
 
     bucket["requests_estimated"] += 1
-    bucket["estimated_cost_usd"] += float(
-        estimate["estimated_cost_usd"]
-    )
+    bucket["estimated_cost_usd"] += float(estimate["estimated_cost_usd"])
 
     context_tier = str(estimate["pricing_context_tier"])
 
     context_tiers = bucket["pricing_context_tiers"]
-    context_tiers[context_tier] = (
-        context_tiers.get(context_tier, 0) + 1
-    )
+    context_tiers[context_tier] = context_tiers.get(context_tier, 0) + 1
 
     context = bucket["pricing_contexts"].setdefault(
         context_tier,
@@ -312,15 +303,11 @@ def _record_model_cost(
     )
 
     context["requests"] += 1
-    context["estimated_cost_usd"] += float(
-        estimate["estimated_cost_usd"]
-    )
+    context["estimated_cost_usd"] += float(estimate["estimated_cost_usd"])
 
     bucket["pricing_source"] = estimate["pricing_source"]
 
-    bucket["long_context_threshold_tokens"] = estimate[
-        "long_context_threshold_tokens"
-    ]
+    bucket["long_context_threshold_tokens"] = estimate["long_context_threshold_tokens"]
 
 
 def _build_token_cost_snapshot(
@@ -353,13 +340,9 @@ def _build_token_cost_snapshot(
             "output_tokens": bucket["output_tokens"],
             "thinking_tokens": bucket["thinking_tokens"],
             "estimated_cost_usd": (
-                round(bucket["estimated_cost_usd"], 12)
-                if has_model_estimate
-                else None
+                round(bucket["estimated_cost_usd"], 12) if has_model_estimate else None
             ),
-            "pricing_context_tiers": dict(
-                bucket["pricing_context_tiers"]
-            ),
+            "pricing_context_tiers": dict(bucket["pricing_context_tiers"]),
             "pricing_contexts": {
                 context_name: {
                     "requests": context["requests"],
@@ -369,13 +352,10 @@ def _build_token_cost_snapshot(
                     ),
                     "rates": dict(context["rates"]),
                 }
-                for context_name, context
-                in bucket["pricing_contexts"].items()
+                for context_name, context in bucket["pricing_contexts"].items()
             },
             "pricing_source": bucket["pricing_source"],
-            "long_context_threshold_tokens": bucket[
-                "long_context_threshold_tokens"
-            ],
+            "long_context_threshold_tokens": bucket["long_context_threshold_tokens"],
             "pricing_as_of": bucket["pricing_as_of"],
         }
 
@@ -393,9 +373,7 @@ def _build_token_cost_snapshot(
         "requests_unestimated": requests_unestimated,
         "is_complete": requests_unestimated == 0,
         "estimated_cost_usd": (
-            round(total_estimated_cost, 12)
-            if has_any_estimate
-            else None
+            round(total_estimated_cost, 12) if has_any_estimate else None
         ),
         "models": models,
     }
@@ -432,9 +410,7 @@ class AnalysisLLMMetrics:
     total_latency_ms: float = 0.0
 
     _latency_samples: deque[float] = field(
-        default_factory=lambda: deque(
-            maxlen=DEFAULT_LATENCY_SAMPLE_CAPACITY
-        ),
+        default_factory=lambda: deque(maxlen=DEFAULT_LATENCY_SAMPLE_CAPACITY),
         repr=False,
         compare=False,
     )
@@ -532,9 +508,7 @@ class AnalysisLLMMetrics:
 
             elif prompt_tokens is not None and output_tokens is not None:
                 self.total_tokens += (
-                    prompt_tokens
-                    + output_tokens
-                    + (thinking_tokens or 0)
+                    prompt_tokens + output_tokens + (thinking_tokens or 0)
                 )
 
             _record_model_cost(
@@ -617,9 +591,7 @@ class AnalysisLLMMetrics:
                 "latency_distribution": _build_latency_distribution(
                     self._latency_samples
                 ),
-                "token_cost_estimate": _build_token_cost_snapshot(
-                    self._model_costs
-                ),
+                "token_cost_estimate": _build_token_cost_snapshot(self._model_costs),
             }
 
 
@@ -652,18 +624,14 @@ class LLMMetrics:
 
         self._lock = Lock()
 
-        self._active_analysis: ContextVar[
-            AnalysisLLMMetrics | None
-        ] = ContextVar(
+        self._active_analysis: ContextVar[AnalysisLLMMetrics | None] = ContextVar(
             f"active_llm_analysis_{id(self)}",
             default=None,
         )
 
         self._provider_metrics: dict[str, dict] = {}
 
-        self._trace_events: deque[dict] = deque(
-            maxlen=self._max_trace_events
-        )
+        self._trace_events: deque[dict] = deque(maxlen=self._max_trace_events)
 
         self.reset()
 
@@ -701,9 +669,7 @@ class LLMMetrics:
                 "total_tokens": 0,
                 "tokens_unreported": 0,
                 "total_latency_ms": 0.0,
-                "latency_samples": deque(
-                    maxlen=DEFAULT_LATENCY_SAMPLE_CAPACITY
-                ),
+                "latency_samples": deque(maxlen=DEFAULT_LATENCY_SAMPLE_CAPACITY),
                 "model_costs": {},
             }
 
@@ -726,9 +692,7 @@ class LLMMetrics:
             request_id=request_id,
         )
 
-        token: Token = self._active_analysis.set(
-            analysis_metrics
-        )
+        token: Token = self._active_analysis.set(analysis_metrics)
 
         try:
             yield analysis_metrics
@@ -761,23 +725,11 @@ class LLMMetrics:
             "timestamp": datetime.now(timezone.utc)
             .isoformat(timespec="milliseconds")
             .replace("+00:00", "Z"),
-            "analysis_id": (
-                analysis_metrics.analysis_id
-                if analysis_metrics
-                else None
-            ),
-            "request_id": (
-                analysis_metrics.request_id
-                if analysis_metrics
-                else None
-            ),
+            "analysis_id": (analysis_metrics.analysis_id if analysis_metrics else None),
+            "request_id": (analysis_metrics.request_id if analysis_metrics else None),
             "provider": provider,
             "model": model,
-            "duration_ms": (
-                round(duration_ms, 2)
-                if duration_ms is not None
-                else None
-            ),
+            "duration_ms": (round(duration_ms, 2) if duration_ms is not None else None),
             "tokens": tokens,
             "retry": retry,
             "error_type": error_type,
@@ -838,9 +790,7 @@ class LLMMetrics:
             and output_tokens is not None
         ):
             effective_total_tokens = (
-                prompt_tokens
-                + output_tokens
-                + (thinking_tokens or 0)
+                prompt_tokens + output_tokens + (thinking_tokens or 0)
             )
 
         estimate = _estimate_cost_for_call(
@@ -991,17 +941,14 @@ class LLMMetrics:
             event_type="llm_retry",
             status="scheduled",
             provider=provider,
-            model=model or PROVIDER_MODELS.get(
+            model=model
+            or PROVIDER_MODELS.get(
                 provider,
                 "unknown",
             ),
             retry={
                 "attempt": attempt,
-                "next_attempt": (
-                    attempt + 1
-                    if attempt is not None
-                    else None
-                ),
+                "next_attempt": (attempt + 1 if attempt is not None else None),
                 "max_attempts": max_attempts,
                 "delay_ms": delay_ms,
             },
@@ -1057,9 +1004,7 @@ class LLMMetrics:
                 ),
             }
 
-            result.update(
-                get_pricing_metadata(provider)
-            )
+            result.update(get_pricing_metadata(provider))
 
             if provider == "gemini":
                 result["quota"] = {
@@ -1078,10 +1023,7 @@ class LLMMetrics:
         with self._lock:
             providers = list(self._provider_metrics)
 
-        return {
-            provider: self.snapshot(provider=provider)
-            for provider in providers
-        }
+        return {provider: self.snapshot(provider=provider) for provider in providers}
 
     # ------------------------------------------------------
     # CONSULTA DOS TRACES
@@ -1113,16 +1055,10 @@ class LLMMetrics:
                 if provider is not None and event["provider"] != provider:
                     continue
 
-                if (
-                    analysis_id is not None
-                    and event["analysis_id"] != analysis_id
-                ):
+                if analysis_id is not None and event["analysis_id"] != analysis_id:
                     continue
 
-                if (
-                    request_id is not None
-                    and event["request_id"] != request_id
-                ):
+                if request_id is not None and event["request_id"] != request_id:
                     continue
 
                 if status is not None and event["status"] != status:
