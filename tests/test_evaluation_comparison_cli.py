@@ -307,7 +307,7 @@ def test_execute_benchmark_comparison_raises_when_baseline_is_missing():
             return (
                 None
                 if benchmark_id == "baseline-001"
-                else (make_benchmark_report("candidate-001"))
+                else make_benchmark_report("candidate-001")
             )
 
     with pytest.raises(ValueError, match="baseline-001"):
@@ -332,6 +332,31 @@ def test_execute_benchmark_comparison_raises_when_candidate_is_missing():
             history_store=FakeHistoryStore(),
             baseline_id="baseline-001",
             candidate_id="candidate-001",
+        )
+
+
+@pytest.mark.parametrize(
+    ("baseline_id", "candidate_id", "expected_message"),
+    [
+        ("", "candidate-001", "baseline"),
+        ("baseline-001", "   ", "candidate"),
+        ("same-id", "same-id", "diferentes"),
+    ],
+)
+def test_execute_benchmark_comparison_rejects_invalid_ids(
+    baseline_id,
+    candidate_id,
+    expected_message,
+):
+    class FakeHistoryStore:
+        def get_benchmark(self, benchmark_id):
+            pytest.fail("O histórico não deve ser consultado para IDs inválidos.")
+
+    with pytest.raises(ValueError, match=expected_message):
+        cli.execute_benchmark_comparison(
+            history_store=FakeHistoryStore(),
+            baseline_id=baseline_id,
+            candidate_id=candidate_id,
         )
 
 
@@ -595,3 +620,69 @@ def test_main_comparison_rejects_allow_llm(
         )
 
     assert exc.value.code == 2
+
+
+def test_main_returns_failure_when_candidate_does_not_exist(
+    monkeypatch,
+    capsys,
+):
+    baseline = make_benchmark_report("baseline-001")
+
+    class FakeHistoryStore:
+        def get_benchmark(self, benchmark_id):
+            if benchmark_id == "baseline-001":
+                return baseline
+
+            return None
+
+    monkeypatch.setattr(
+        cli,
+        "BenchmarkHistory",
+        FakeHistoryStore,
+        raising=False,
+    )
+
+    exit_code = cli.main(
+        [
+            "--compare-benchmarks",
+            "baseline-001",
+            "missing-candidate",
+        ]
+    )
+
+    captured = capsys.readouterr()
+
+    assert exit_code == cli.EXIT_FAILURE
+    assert "missing-candidate" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_main_returns_error_when_history_lookup_fails(
+    monkeypatch,
+    capsys,
+):
+    class FakeHistoryStore:
+        def get_benchmark(self, benchmark_id):
+            raise RuntimeError("SQLite indisponível")
+
+    monkeypatch.setattr(
+        cli,
+        "BenchmarkHistory",
+        FakeHistoryStore,
+        raising=False,
+    )
+
+    exit_code = cli.main(
+        [
+            "--compare-benchmarks",
+            "baseline-001",
+            "candidate-001",
+        ]
+    )
+
+    captured = capsys.readouterr()
+
+    assert exit_code == cli.EXIT_ERROR
+    assert "Erro durante a comparação" in captured.err
+    assert "SQLite indisponível" in captured.err
+    assert "Traceback (most recent call last)" in captured.err
