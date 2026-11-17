@@ -45,6 +45,10 @@ The platform also includes an AI Evaluation Engine for browsing benchmark histor
 
 ## Product experience
 
+<p align="center">
+  <img src="docs/assets/dashboard.png" width="860" alt="AI Business Analyst dashboard showing monthly delivered and cancelled orders, chart and results table"/>
+</p>
+
 <!-- When docs/assets/demo.gif is recorded from the real application, add:
 <p align="center"><img src="docs/assets/demo.gif" width="860" alt="AI Business Analyst demonstration"/></p>
 -->
@@ -424,6 +428,10 @@ A plataforma também possui um AI Evaluation Engine para consultar o histórico 
 **Conteúdo:** [Experiência do produto](#experiência-do-produto) · [Capacidades](#capacidades) · [AI Evaluation Engine](#ai-evaluation-engine-1) · [Arquitetura](#arquitetura) · [Segurança](#segurança-e-confiabilidade) · [Dados](#conjunto-de-dados) · [Tecnologias](#tecnologias) · [Instalação](#instalação) · [Testes](#testes-e-qualidade) · [Automação](#automação) · [Próximos passos](#próximos-passos)
 
 ## Experiência do produto
+
+<p align="center">
+  <img src="docs/assets/dashboard.png" width="860" alt="Painel do AI Business Analyst com gráfico mensal de pedidos entregues e cancelados e tabela de resultados"/>
+</p>
 
 <!-- Quando docs/assets/demo.gif for gravado a partir da aplicação real, adicione:
 <p align="center"><img src="docs/assets/demo.gif" width="860" alt="Demonstração do AI Business Analyst"/></p>
