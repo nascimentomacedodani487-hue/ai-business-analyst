@@ -42,6 +42,10 @@ EXIT_FAILURE = 1
 EXIT_ERROR = 2
 
 
+class _UnknownCaseError(ValueError):
+    """Erro de validação quando um ID solicitado não existe no dataset."""
+
+
 # ==========================================================
 # ARGUMENTOS
 # ==========================================================
@@ -327,7 +331,7 @@ def select_cases(
     unknown_ids = sorted(requested_set - available_ids)
 
     if unknown_ids:
-        raise ValueError(
+        raise _UnknownCaseError(
             "Cenário(s) não encontrado(s): "
             + ", ".join(unknown_ids)
             + ". Utilize --list-cases para consultar os IDs disponíveis."
@@ -2795,18 +2799,42 @@ def main(
     try:
         cases = load_cases(args.dataset)
 
-        selected_cases = select_cases(
-            cases,
-            args.case_ids,
-        )
-
     except Exception as exc:
         print(
             f"Erro ao carregar dataset: {exc}",
             file=sys.stderr,
         )
 
-        logger.exception("Falha ao preparar os cenários de avaliação")
+        logger.exception("Falha ao carregar o dataset de avaliação")
+
+        return EXIT_ERROR
+
+    try:
+        selected_cases = select_cases(
+            cases,
+            args.case_ids,
+        )
+
+    except _UnknownCaseError as exc:
+        logger.warning(
+            "Seleção de cenários rejeitada: %s",
+            exc,
+        )
+
+        print(
+            f"Erro ao selecionar cenários: {exc}",
+            file=sys.stderr,
+        )
+
+        return EXIT_ERROR
+
+    except Exception as exc:
+        print(
+            f"Erro inesperado ao selecionar cenários: {exc}",
+            file=sys.stderr,
+        )
+
+        logger.exception("Falha inesperada ao selecionar os cenários")
 
         return EXIT_ERROR
 

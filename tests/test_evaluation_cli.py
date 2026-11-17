@@ -265,7 +265,7 @@ def test_load_cases_loads_real_dataset():
 
     assert {case.case_id for case in sql_cases} == EXPECTED_SQL_CASE_IDS
 
-    assert {case.case_id for case in behavioral_cases} == (EXPECTED_BEHAVIORAL_CASE_IDS)
+    assert {case.case_id for case in behavioral_cases} == EXPECTED_BEHAVIORAL_CASE_IDS
 
 
 def test_load_cases_rejects_empty_dataset(monkeypatch):
@@ -886,6 +886,68 @@ def test_main_returns_error_when_dataset_loading_fails(
     )
 
     assert exit_code == cli.EXIT_ERROR
+
+
+def test_main_returns_error_without_traceback_for_unknown_case(
+    monkeypatch,
+    cases,
+    capsys,
+):
+    monkeypatch.setattr(
+        cli,
+        "load_cases",
+        lambda path=None: cases,
+    )
+
+    exit_code = cli.main(
+        [
+            "--validate-only",
+            "--case",
+            "cenario_inexistente",
+        ]
+    )
+
+    captured = capsys.readouterr()
+
+    assert exit_code == cli.EXIT_ERROR
+    assert "Erro ao selecionar cenários:" in captured.err
+    assert "cenario_inexistente" in captured.err
+    assert "Utilize --list-cases" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_main_preserves_traceback_for_unexpected_case_selection_error(
+    monkeypatch,
+    cases,
+    capsys,
+):
+    monkeypatch.setattr(
+        cli,
+        "load_cases",
+        lambda path=None: cases,
+    )
+
+    def fail_selection(*args, **kwargs):
+        raise RuntimeError("Falha inesperada na seleção")
+
+    monkeypatch.setattr(
+        cli,
+        "select_cases",
+        fail_selection,
+    )
+
+    exit_code = cli.main(
+        [
+            "--validate-only",
+        ]
+    )
+
+    captured = capsys.readouterr()
+
+    assert exit_code == cli.EXIT_ERROR
+    assert "Erro inesperado ao selecionar cenários" in captured.err
+    assert "Falha inesperada na seleção" in captured.err
+    assert "Traceback (most recent call last)" in captured.err
 
 
 def test_main_returns_error_when_evaluation_fails(
