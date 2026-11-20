@@ -195,10 +195,13 @@ class GeminiClient:
                 2,
             )
 
+            error_type = type(exc).__name__
+
             llm_metrics.record_failure(
                 provider=self.provider_name,
                 model=self.model,
                 duration_ms=duration_ms,
+                error_type=error_type,
             )
 
             logger.exception(
@@ -210,6 +213,7 @@ class GeminiClient:
                     "duration_ms": duration_ms,
                     "prompt_length": prompt_length,
                     "structured_json": response_schema is not None,
+                    "error_type": error_type,
                 },
             )
 

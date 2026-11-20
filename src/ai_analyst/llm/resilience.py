@@ -2,7 +2,8 @@
 Camada de resiliência para provedores de modelos de linguagem.
 
 Implementa novas tentativas com backoff exponencial
-para falhas temporárias.
+para falhas temporárias e registra os eventos de retry
+nas métricas de observabilidade.
 """
 
 import logging
@@ -143,6 +144,8 @@ class RetryLLMProvider:
                         "Tentativas de chamada ao provedor esgotadas",
                         extra={
                             "event": "llm_retry_exhausted",
+                            "provider": self.provider_name,
+                            "model": self.model,
                             "attempt": attempt,
                             "max_attempts": self.max_attempts,
                             "error_type": type(exc).__name__,
@@ -152,12 +155,23 @@ class RetryLLMProvider:
 
                 delay = self.initial_delay * (2 ** (attempt - 1))
 
-                llm_metrics.record_retry()
+                # Registra o retry no provedor correto,
+                # na análise ativa e no tracing individual.
+                llm_metrics.record_retry(
+                    provider=self.provider_name,
+                    model=self.model,
+                    attempt=attempt,
+                    max_attempts=self.max_attempts,
+                    delay_ms=delay * 1000,
+                    error_type=type(exc).__name__,
+                )
 
                 logger.warning(
                     "Falha temporária no provedor. Nova tentativa programada.",
                     extra={
                         "event": "llm_retry_scheduled",
+                        "provider": self.provider_name,
+                        "model": self.model,
                         "attempt": attempt,
                         "next_attempt": attempt + 1,
                         "max_attempts": self.max_attempts,

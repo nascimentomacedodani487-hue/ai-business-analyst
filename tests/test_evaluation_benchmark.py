@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from ai_analyst.evaluation.benchmark import BenchmarkRunner
+from ai_analyst.evaluation.history import BenchmarkHistory
 from ai_analyst.evaluation.models import EvaluationCase
 
 # ==========================================================
@@ -18,7 +19,6 @@ def make_case(
     category: str = "volume",
     expected_analysis_mode: str | None = None,
 ) -> EvaluationCase:
-
     return EvaluationCase(
         case_id=case_id,
         question=f"Pergunta de teste: {case_id}",
@@ -28,6 +28,66 @@ def make_case(
         required_columns=("total_orders",),
         expected_analysis_mode=expected_analysis_mode,
     )
+
+
+def make_llm_usage_snapshot(
+    marker: str,
+) -> dict[str, Any]:
+    """Cria um snapshot opaco para testar sua preservação no benchmark."""
+
+    return {
+        "fixture_marker": marker,
+        "requests": {
+            "total": 10,
+            "successful": 9,
+            "failed": 1,
+            "retries": 2,
+        },
+        "tokens": {
+            "input": 1200,
+            "output": 800,
+            "thinking": 100,
+            "total": 2100,
+            "unreported": 0,
+        },
+        "latency": {
+            "total_ms": 2500.0,
+            "average_ms": 250.0,
+        },
+    }
+
+
+def make_case_llm_metrics(
+    provider: str,
+    case_id: str,
+    index: int,
+) -> dict[str, Any]:
+    """Cria métricas individuais e identificáveis por cenário e provedor."""
+
+    multiplier = index + 1
+
+    return {
+        "analysis_id": f"{provider}:{case_id}:analysis",
+        "provider": provider,
+        "model": f"{provider}-model",
+        "requests": {
+            "total": multiplier,
+            "successful": multiplier,
+            "failed": 0,
+            "retries": index,
+        },
+        "tokens": {
+            "input": 100 * multiplier,
+            "output": 50 * multiplier,
+            "thinking": 10 * multiplier,
+            "total": 160 * multiplier,
+            "unreported": 0,
+        },
+        "latency": {
+            "total_ms": 250.0 * multiplier,
+            "average_ms": 250.0,
+        },
+    }
 
 
 def make_report(
@@ -43,12 +103,35 @@ def make_report(
     for index, case in enumerate(cases):
         actual_mode = case.expected_analysis_mode or "single_query"
 
+        matched_rows = 8 + index
+        compared_rows = 10 + index
+
+        matched_cells = 18 + (2 * index)
+        compared_cells = 20 + (2 * index)
+
         metadata = {
             "category": case.category,
             "analysis_mode": actual_mode,
-            "expected_analysis_mode": (case.expected_analysis_mode),
+            "expected_analysis_mode": case.expected_analysis_mode,
             "analysis_mode_matches": (
                 True if case.expected_analysis_mode is not None else None
+            ),
+            "matched_rows": matched_rows,
+            "compared_rows": compared_rows,
+            "row_accuracy": round(
+                matched_rows / compared_rows * 100,
+                2,
+            ),
+            "matched_cells": matched_cells,
+            "compared_cells": compared_cells,
+            "cell_accuracy": round(
+                matched_cells / compared_cells * 100,
+                2,
+            ),
+            "llm_metrics": make_case_llm_metrics(
+                provider,
+                case.case_id,
+                index,
             ),
         }
 
@@ -92,6 +175,11 @@ def make_report(
         "cache_hits": 0,
         "cache_misses": total_cases,
         "cache_hit_rate": 0.0,
+        "row_accuracy": 100.0,
+        "cell_accuracy": 100.0,
+        "llm_usage": make_llm_usage_snapshot(
+            f"{provider}:summary",
+        ),
         "analysis_mode_adherence": {
             "expected_cases": sum(
                 case.expected_analysis_mode is not None for case in cases
@@ -136,6 +224,11 @@ def make_report(
             "cache_hits": 0,
             "cache_misses": category_count,
             "cache_hit_rate": 0.0,
+            "row_accuracy": 100.0,
+            "cell_accuracy": 100.0,
+            "llm_usage": make_llm_usage_snapshot(
+                f"{provider}:{case.category}",
+            ),
             "analysis_mode_adherence": {
                 "expected_cases": sum(
                     item.expected_analysis_mode is not None
@@ -221,7 +314,6 @@ class FakeRunner:
         cases: list[EvaluationCase],
         run_id: str,
     ) -> dict[str, Any]:
-
         self.executions.append(
             {
                 "provider": self.provider_name,
@@ -241,6 +333,7 @@ def make_benchmark(
     cases: list[EvaluationCase],
     executions: list[dict[str, Any]] | None = None,
     errors: dict[str, Exception] | None = None,
+    history_store: BenchmarkHistory | None = None,
 ) -> BenchmarkRunner:
     """Cria benchmark com runners simulados."""
 
@@ -263,6 +356,7 @@ def make_benchmark(
     return BenchmarkRunner(
         providers=providers,
         runner_factory=runner_factory,
+        history_store=history_store,
     )
 
 
@@ -297,7 +391,6 @@ def test_benchmark_normalizes_supported_providers(
 
 
 def test_benchmark_uses_all_supported_providers_by_default():
-
     benchmark = BenchmarkRunner(
         runner_factory=lambda **kwargs: None,
     )
@@ -310,7 +403,6 @@ def test_benchmark_uses_all_supported_providers_by_default():
 
 
 def test_benchmark_requires_at_least_two_providers():
-
     with pytest.raises(
         ValueError,
         match="pelo menos dois provedores",
@@ -321,7 +413,6 @@ def test_benchmark_requires_at_least_two_providers():
 
 
 def test_benchmark_rejects_string_as_provider_collection():
-
     with pytest.raises(
         TypeError,
         match="não uma string individual",
@@ -332,7 +423,6 @@ def test_benchmark_rejects_string_as_provider_collection():
 
 
 def test_benchmark_rejects_non_string_provider():
-
     with pytest.raises(
         TypeError,
         match="devem ser strings",
@@ -343,7 +433,6 @@ def test_benchmark_rejects_non_string_provider():
 
 
 def test_benchmark_rejects_empty_provider():
-
     with pytest.raises(
         ValueError,
         match="não pode ser vazio",
@@ -354,7 +443,6 @@ def test_benchmark_rejects_empty_provider():
 
 
 def test_benchmark_rejects_unsupported_provider():
-
     with pytest.raises(
         ValueError,
         match="Provedor não suportado",
@@ -365,7 +453,6 @@ def test_benchmark_rejects_unsupported_provider():
 
 
 def test_benchmark_rejects_duplicate_providers():
-
     with pytest.raises(
         ValueError,
         match="Provedor duplicado",
@@ -381,7 +468,6 @@ def test_benchmark_rejects_duplicate_providers():
 
 
 def test_benchmark_requires_at_least_one_case():
-
     benchmark = BenchmarkRunner(
         providers=["gemini", "openai"],
         runner_factory=lambda **kwargs: None,
@@ -395,7 +481,6 @@ def test_benchmark_requires_at_least_one_case():
 
 
 def test_benchmark_rejects_invalid_case_objects():
-
     benchmark = BenchmarkRunner(
         providers=["gemini", "openai"],
         runner_factory=lambda **kwargs: None,
@@ -409,7 +494,6 @@ def test_benchmark_rejects_invalid_case_objects():
 
 
 def test_benchmark_rejects_duplicate_case_ids():
-
     benchmark = BenchmarkRunner(
         providers=["gemini", "openai"],
         runner_factory=lambda **kwargs: None,
@@ -435,7 +519,6 @@ def test_benchmark_rejects_duplicate_case_ids():
 
 
 def test_dataset_fingerprint_is_sha256():
-
     cases = [
         make_case(),
     ]
@@ -449,7 +532,6 @@ def test_dataset_fingerprint_is_sha256():
 
 
 def test_dataset_fingerprint_is_deterministic():
-
     cases = [
         make_case(),
         make_case(
@@ -459,14 +541,12 @@ def test_dataset_fingerprint_is_deterministic():
     ]
 
     first = BenchmarkRunner._calculate_dataset_fingerprint(cases)
-
     second = BenchmarkRunner._calculate_dataset_fingerprint(cases)
 
     assert first == second
 
 
 def test_dataset_fingerprint_changes_when_case_changes():
-
     original = make_case()
 
     modified = replace(
@@ -475,7 +555,6 @@ def test_dataset_fingerprint_changes_when_case_changes():
     )
 
     first = BenchmarkRunner._calculate_dataset_fingerprint([original])
-
     second = BenchmarkRunner._calculate_dataset_fingerprint([modified])
 
     assert first != second
@@ -487,13 +566,23 @@ def test_dataset_fingerprint_changes_when_case_changes():
 
 
 def test_metric_snapshot_combines_run_and_metric_summaries():
-    """
-    Garante que métricas detalhadas não sejam descartadas
-    quando o relatório também possui um summary de execução.
+    """Garante a preservação das métricas detalhadas."""
 
-    Os campos presentes nos dois summaries devem respeitar
-    a precedência do summary principal da execução.
-    """
+    llm_usage = {
+        "requests": {
+            "total": 10,
+            "successful": 9,
+            "failed": 1,
+            "retries": 2,
+        },
+        "tokens": {
+            "input": 1200,
+            "output": 800,
+            "thinking": 100,
+            "total": 2100,
+            "unreported": 0,
+        },
+    }
 
     report = {
         "summary": {
@@ -511,6 +600,9 @@ def test_metric_snapshot_combines_run_and_metric_summaries():
                     "average_score": 0.85,
                     "average_duration_ms": 250.0,
                     "cache_hit_rate": 25.0,
+                    "row_accuracy": 91.25,
+                    "cell_accuracy": 96.5,
+                    "llm_usage": llm_usage,
                     "analysis_mode_adherence": {
                         "expected_cases": 2,
                         "observed_cases": 2,
@@ -538,6 +630,10 @@ def test_metric_snapshot_combines_run_and_metric_summaries():
     assert snapshot["error_rate"] == 25.0
     assert snapshot["skipped_rate"] == 25.0
 
+    assert snapshot["row_accuracy"] == 91.25
+    assert snapshot["cell_accuracy"] == 96.5
+    assert snapshot["llm_usage"] == llm_usage
+
     assert snapshot["analysis_mode_adherence"] == {
         "expected_cases": 2,
         "observed_cases": 2,
@@ -548,17 +644,68 @@ def test_metric_snapshot_combines_run_and_metric_summaries():
     }
 
 
+def test_metric_snapshot_prefers_run_summary_for_new_metrics():
+    report = {
+        "summary": {
+            "row_accuracy": 80.0,
+            "cell_accuracy": 85.0,
+            "llm_usage": {
+                "source": "run_summary",
+            },
+        },
+        "metadata": {
+            "metrics": {
+                "summary": {
+                    "row_accuracy": 95.0,
+                    "cell_accuracy": 98.0,
+                    "llm_usage": {
+                        "source": "metrics_summary",
+                    },
+                },
+            },
+        },
+    }
+
+    snapshot = BenchmarkRunner._metric_snapshot(report)
+
+    assert snapshot["row_accuracy"] == 80.0
+    assert snapshot["cell_accuracy"] == 85.0
+    assert snapshot["llm_usage"] == {
+        "source": "run_summary",
+    }
+
+
+def test_metric_snapshot_supports_legacy_reports_without_new_metrics():
+    report = {
+        "summary": {
+            "total_cases": 2,
+            "evaluated_cases": 2,
+            "passed_cases": 2,
+            "failed_cases": 0,
+            "error_cases": 0,
+            "skipped_cases": 0,
+            "pass_rate": 100.0,
+        },
+    }
+
+    snapshot = BenchmarkRunner._metric_snapshot(report)
+
+    assert snapshot["total_cases"] == 2
+    assert snapshot["pass_rate"] == 100.0
+
+    assert snapshot["row_accuracy"] is None
+    assert snapshot["cell_accuracy"] is None
+    assert snapshot["llm_usage"] is None
+
+
 # ==========================================================
 # EXECUÇÃO DO BENCHMARK
 # ==========================================================
 
 
 def test_benchmark_executes_all_providers_with_same_dataset():
-
     cases = [
-        make_case(
-            case_id="total_orders",
-        ),
+        make_case(case_id="total_orders"),
         make_case(
             case_id="delivery",
             category="delivery",
@@ -592,24 +739,17 @@ def test_benchmark_executes_all_providers_with_same_dataset():
 
     for execution in executions:
         assert execution["run_id"] == (f"benchmark-test-001-{execution['provider']}")
-
         assert execution["cases"] == cases
 
     assert report["benchmark_id"] == "benchmark-test-001"
-
     assert report["configuration"]["same_dataset_for_all_providers"] is True
-
     assert report["summary"]["provider_count"] == 3
-
     assert report["summary"]["completed_providers"] == 3
-
     assert report["summary"]["failed_providers"] == 0
-
     assert report["summary"]["all_providers_completed"] is True
 
 
 def test_benchmark_generates_unique_ids_when_not_provided():
-
     cases = [
         make_case(),
     ]
@@ -622,17 +762,13 @@ def test_benchmark_generates_unique_ids_when_not_provided():
         executions=executions,
     )
 
-    report = benchmark.run(
-        cases=cases,
-    )
+    report = benchmark.run(cases=cases)
 
     assert report["benchmark_id"]
-
     assert executions[0]["run_id"].startswith(report["benchmark_id"])
 
 
 def test_benchmark_rejects_empty_benchmark_id():
-
     cases = [
         make_case(),
     ]
@@ -658,7 +794,6 @@ def test_benchmark_rejects_empty_benchmark_id():
 
 
 def test_benchmark_generates_provider_comparison():
-
     cases = [
         make_case(),
     ]
@@ -681,16 +816,23 @@ def test_benchmark_generates_provider_comparison():
     }
 
     assert comparison["gemini"]["execution_status"] == "completed"
-
     assert comparison["openai"]["execution_status"] == "completed"
 
     assert comparison["gemini"]["metrics"]["pass_rate"] == 100.0
-
     assert comparison["openai"]["metrics"]["average_score"] == 1.0
+
+    for provider in ("gemini", "openai"):
+        provider_metrics = comparison[provider]["metrics"]
+
+        assert provider_metrics["row_accuracy"] == 100.0
+        assert provider_metrics["cell_accuracy"] == 100.0
+
+        assert provider_metrics["llm_usage"] == make_llm_usage_snapshot(
+            f"{provider}:summary",
+        )
 
 
 def test_benchmark_generates_category_comparison():
-
     cases = [
         make_case(
             case_id="total_orders",
@@ -728,13 +870,7 @@ def test_benchmark_generates_category_comparison():
         "openai",
     }
 
-    # ------------------------------------------------------
-    # Validação das métricas da categoria de volume
-    # ------------------------------------------------------
-
     for provider in ("gemini", "openai"):
-        # As métricas são retornadas diretamente,
-        # sem uma camada adicional chamada "metrics".
         volume_metrics = category_comparison["volume"][provider]
 
         assert volume_metrics["total_cases"] == 2
@@ -747,6 +883,13 @@ def test_benchmark_generates_category_comparison():
         assert volume_metrics["error_rate"] == 0.0
         assert volume_metrics["skipped_rate"] == 0.0
 
+        assert volume_metrics["row_accuracy"] == 100.0
+        assert volume_metrics["cell_accuracy"] == 100.0
+
+        assert volume_metrics["llm_usage"] == make_llm_usage_snapshot(
+            f"{provider}:volume",
+        )
+
         adherence = volume_metrics["analysis_mode_adherence"]
 
         assert adherence["expected_cases"] == 2
@@ -754,10 +897,6 @@ def test_benchmark_generates_category_comparison():
         assert adherence["matches"] == 2
         assert adherence["mismatches"] == 0
         assert adherence["rate"] == 100.0
-
-    # ------------------------------------------------------
-    # Validação das métricas da categoria de delivery
-    # ------------------------------------------------------
 
     for provider in ("gemini", "openai"):
         delivery_metrics = category_comparison["delivery"][provider]
@@ -772,6 +911,13 @@ def test_benchmark_generates_category_comparison():
         assert delivery_metrics["error_rate"] == 0.0
         assert delivery_metrics["skipped_rate"] == 0.0
 
+        assert delivery_metrics["row_accuracy"] == 100.0
+        assert delivery_metrics["cell_accuracy"] == 100.0
+
+        assert delivery_metrics["llm_usage"] == make_llm_usage_snapshot(
+            f"{provider}:delivery",
+        )
+
         adherence = delivery_metrics["analysis_mode_adherence"]
 
         assert adherence["expected_cases"] == 1
@@ -781,8 +927,12 @@ def test_benchmark_generates_category_comparison():
         assert adherence["rate"] == 100.0
 
 
-def test_benchmark_generates_case_comparison():
+# ==========================================================
+# COMPARAÇÃO DETALHADA POR CENÁRIO
+# ==========================================================
 
+
+def test_benchmark_generates_case_comparison():
     cases = [
         make_case(
             case_id="operational_overview",
@@ -798,19 +948,270 @@ def test_benchmark_generates_case_comparison():
 
     report = benchmark.run(cases=cases)
 
-    case_comparison = report["comparison"]["by_case"]
-
-    overview = case_comparison["operational_overview"]
+    overview = report["comparison"]["by_case"]["operational_overview"]
 
     assert overview["expected_analysis_mode"] == "multi_query"
 
     assert overview["providers"]["gemini"]["status"] == "passed"
-
     assert overview["providers"]["openai"]["status"] == "passed"
 
     assert overview["providers"]["gemini"]["analysis_mode"] == "multi_query"
 
     assert overview["providers"]["gemini"]["analysis_mode_matches"] is True
+
+    for provider in ("gemini", "openai"):
+        provider_result = overview["providers"][provider]
+
+        assert provider_result["matched_rows"] == 8
+        assert provider_result["compared_rows"] == 10
+        assert provider_result["row_accuracy"] == 80.0
+
+        assert provider_result["matched_cells"] == 18
+        assert provider_result["compared_cells"] == 20
+        assert provider_result["cell_accuracy"] == 90.0
+
+    assert overview["providers"]["gemini"]["llm_metrics"] == (
+        make_case_llm_metrics("gemini", "operational_overview", 0)
+    )
+
+    assert overview["providers"]["openai"]["llm_metrics"] == (
+        make_case_llm_metrics("openai", "operational_overview", 0)
+    )
+
+
+def test_case_comparison_supports_legacy_results_without_quality_metrics():
+    cases = [
+        make_case(),
+    ]
+
+    def runner_factory(
+        provider_name: str,
+        dataset_path=None,
+    ):
+        report = make_report(
+            provider_name,
+            cases,
+        )
+
+        metadata = report["results"][0]["metadata"]
+
+        metadata.pop("matched_rows")
+        metadata.pop("compared_rows")
+        metadata.pop("row_accuracy")
+        metadata.pop("matched_cells")
+        metadata.pop("compared_cells")
+        metadata.pop("cell_accuracy")
+        metadata.pop("llm_metrics")
+
+        return FakeRunner(
+            provider_name=provider_name,
+            report=report,
+        )
+
+    benchmark = BenchmarkRunner(
+        providers=["gemini", "openai"],
+        runner_factory=runner_factory,
+    )
+
+    report = benchmark.run(cases=cases)
+
+    providers = report["comparison"]["by_case"]["total_orders"]["providers"]
+
+    for provider in ("gemini", "openai"):
+        result = providers[provider]
+
+        assert result["status"] == "passed"
+
+        assert result["matched_rows"] is None
+        assert result["compared_rows"] is None
+        assert result["row_accuracy"] is None
+
+        assert result["matched_cells"] is None
+        assert result["compared_cells"] is None
+        assert result["cell_accuracy"] is None
+
+        assert result["llm_metrics"] is None
+
+
+def test_benchmark_preserves_case_specific_llm_metrics():
+    cases = [
+        make_case(
+            case_id="total_orders",
+            category="volume",
+        ),
+        make_case(
+            case_id="delivery",
+            category="delivery",
+        ),
+    ]
+
+    benchmark = make_benchmark(
+        providers=["gemini", "openai"],
+        cases=cases,
+    )
+
+    report = benchmark.run(cases=cases)
+
+    by_case = report["comparison"]["by_case"]
+
+    orders = by_case["total_orders"]["providers"]
+    delivery = by_case["delivery"]["providers"]
+
+    gemini_orders_metrics = orders["gemini"]["llm_metrics"]
+    gemini_delivery_metrics = delivery["gemini"]["llm_metrics"]
+
+    assert gemini_orders_metrics["analysis_id"] == ("gemini:total_orders:analysis")
+
+    assert gemini_delivery_metrics["analysis_id"] == ("gemini:delivery:analysis")
+
+    assert gemini_orders_metrics["tokens"]["total"] == 160
+    assert gemini_delivery_metrics["tokens"]["total"] == 320
+
+    assert gemini_orders_metrics is not gemini_delivery_metrics
+
+    openai_orders_metrics = orders["openai"]["llm_metrics"]
+    openai_delivery_metrics = delivery["openai"]["llm_metrics"]
+
+    assert openai_orders_metrics["analysis_id"] == ("openai:total_orders:analysis")
+
+    assert openai_delivery_metrics["analysis_id"] == ("openai:delivery:analysis")
+
+    assert openai_orders_metrics["tokens"]["total"] == 160
+    assert openai_delivery_metrics["tokens"]["total"] == 320
+
+    assert gemini_orders_metrics["provider"] == "gemini"
+    assert openai_orders_metrics["provider"] == "openai"
+
+    assert gemini_orders_metrics is not openai_orders_metrics
+
+    assert (
+        gemini_orders_metrics["analysis_id"] != (openai_orders_metrics["analysis_id"])
+    )
+
+
+def test_benchmark_preserves_case_specific_llm_latency_and_retries():
+    cases = [
+        make_case(case_id="total_orders"),
+        make_case(case_id="delivery"),
+    ]
+
+    benchmark = make_benchmark(
+        providers=["gemini", "openai"],
+        cases=cases,
+    )
+
+    report = benchmark.run(cases=cases)
+
+    by_case = report["comparison"]["by_case"]
+
+    for provider in ("gemini", "openai"):
+        first_metrics = by_case["total_orders"]["providers"][provider]["llm_metrics"]
+
+        second_metrics = by_case["delivery"]["providers"][provider]["llm_metrics"]
+
+        assert first_metrics["requests"]["total"] == 1
+        assert first_metrics["requests"]["retries"] == 0
+        assert first_metrics["tokens"]["input"] == 100
+        assert first_metrics["tokens"]["output"] == 50
+        assert first_metrics["latency"]["total_ms"] == 250.0
+
+        assert second_metrics["requests"]["total"] == 2
+        assert second_metrics["requests"]["retries"] == 1
+        assert second_metrics["tokens"]["input"] == 200
+        assert second_metrics["tokens"]["output"] == 100
+        assert second_metrics["latency"]["total_ms"] == 500.0
+
+
+def test_benchmark_preserves_answer_evidence_validation(tmp_path):
+    """Preserva evidências SQL na comparação e no histórico."""
+
+    cases = [
+        make_case(),
+    ]
+
+    history = BenchmarkHistory(
+        tmp_path / "answer_evidence_benchmark_history.sqlite3",
+    )
+
+    expected_validation = {
+        "status": "verified",
+        "claims_checked": 1,
+        "supported_claims": 1,
+        "unsupported_claims": 0,
+        "fixture_marker": "answer-evidence-test",
+    }
+
+    def runner_factory(
+        provider_name: str,
+        dataset_path=None,
+    ):
+        report = make_report(
+            provider_name,
+            cases,
+        )
+
+        result_metadata = report["results"][0]["metadata"]
+
+        result_metadata.update(
+            {
+                "answer_evidence_validation": expected_validation,
+                "answer_evidence_status": "verified",
+                "answer_claims_supported": True,
+            }
+        )
+
+        return FakeRunner(
+            provider_name=provider_name,
+            report=report,
+        )
+
+    benchmark = BenchmarkRunner(
+        providers=["gemini", "openai"],
+        runner_factory=runner_factory,
+        history_store=history,
+    )
+
+    report = benchmark.run(
+        cases=cases,
+        benchmark_id="answer-evidence-001",
+    )
+
+    # 1. Relatório individual original.
+    original_metadata = report["provider_runs"]["gemini"]["report"]["results"][0][
+        "metadata"
+    ]
+
+    assert original_metadata["answer_evidence_validation"] == expected_validation
+    assert original_metadata["answer_evidence_status"] == "verified"
+    assert original_metadata["answer_claims_supported"] is True
+
+    # 2. Comparação consolidada por cenário.
+    comparison = report["comparison"]["by_case"]["total_orders"]["providers"]["gemini"]
+
+    assert comparison["answer_evidence_validation"] == expected_validation
+    assert comparison["answer_evidence_status"] == "verified"
+    assert comparison["answer_claims_supported"] is True
+
+    # 3. Recuperação do histórico SQLite.
+    stored_report = history.get_benchmark("answer-evidence-001")
+
+    assert stored_report is not None
+
+    stored_metadata = stored_report["provider_runs"]["gemini"]["report"]["results"][0][
+        "metadata"
+    ]
+
+    assert stored_metadata["answer_evidence_validation"] == expected_validation
+    assert stored_metadata["answer_evidence_status"] == "verified"
+    assert stored_metadata["answer_claims_supported"] is True
+
+    stored_comparison = stored_report["comparison"]["by_case"]["total_orders"][
+        "providers"
+    ]["gemini"]
+
+    assert stored_comparison["answer_evidence_validation"] == expected_validation
+    assert stored_comparison["answer_evidence_status"] == "verified"
+    assert stored_comparison["answer_claims_supported"] is True
 
 
 # ==========================================================
@@ -819,7 +1220,6 @@ def test_benchmark_generates_case_comparison():
 
 
 def test_benchmark_continues_when_one_provider_fails():
-
     cases = [
         make_case(),
     ]
@@ -847,20 +1247,15 @@ def test_benchmark_continues_when_one_provider_fails():
     assert len(executions) == 3
 
     assert report["summary"]["completed_providers"] == 2
-
     assert report["summary"]["failed_providers"] == 1
-
     assert report["summary"]["all_providers_completed"] is False
 
     assert report["provider_runs"]["gemini"]["execution_status"] == "completed"
-
     assert report["provider_runs"]["openai"]["execution_status"] == "error"
-
     assert report["provider_runs"]["anthropic"]["execution_status"] == "completed"
 
 
 def test_benchmark_records_provider_factory_failure():
-
     cases = [
         make_case(),
     ]
@@ -871,7 +1266,6 @@ def test_benchmark_records_provider_factory_failure():
         provider_name: str,
         dataset_path=None,
     ):
-
         initialized.append(provider_name)
 
         if provider_name == "openai":
@@ -900,13 +1294,52 @@ def test_benchmark_records_provider_factory_failure():
     assert report["provider_runs"]["openai"]["execution_status"] == "error"
 
 
+def test_case_comparison_marks_failed_provider_as_not_executed():
+    cases = [
+        make_case(),
+    ]
+
+    benchmark = make_benchmark(
+        providers=["gemini", "openai"],
+        cases=cases,
+        errors={
+            "openai": RuntimeError("Falha simulada."),
+        },
+    )
+
+    report = benchmark.run(cases=cases)
+
+    providers = report["comparison"]["by_case"]["total_orders"]["providers"]
+
+    assert providers["gemini"]["status"] == "passed"
+
+    assert providers["gemini"]["llm_metrics"] == (
+        make_case_llm_metrics("gemini", "total_orders", 0)
+    )
+
+    failed_result = providers["openai"]
+
+    assert failed_result["status"] == "not_executed"
+
+    assert failed_result["matched_rows"] is None
+    assert failed_result["compared_rows"] is None
+    assert failed_result["row_accuracy"] is None
+
+    assert failed_result["matched_cells"] is None
+    assert failed_result["compared_cells"] is None
+    assert failed_result["cell_accuracy"] is None
+
+    assert failed_result["llm_metrics"] is None
+
+    assert failed_result["error"] == "Falha simulada."
+
+
 # ==========================================================
 # RESULTADOS AUSENTES E RELATÓRIOS INVÁLIDOS
 # ==========================================================
 
 
 def test_benchmark_marks_missing_case_result():
-
     cases = [
         make_case(),
     ]
@@ -920,7 +1353,6 @@ def test_benchmark_marks_missing_case_result():
         provider_name: str,
         dataset_path=None,
     ):
-
         return FakeRunner(
             provider_name=provider_name,
             report=empty_report,
@@ -938,12 +1370,20 @@ def test_benchmark_marks_missing_case_result():
     ]
 
     assert openai_result["status"] == "missing_result"
-
     assert openai_result["score"] is None
+
+    assert openai_result["matched_rows"] is None
+    assert openai_result["compared_rows"] is None
+    assert openai_result["row_accuracy"] is None
+
+    assert openai_result["matched_cells"] is None
+    assert openai_result["compared_cells"] is None
+    assert openai_result["cell_accuracy"] is None
+
+    assert openai_result["llm_metrics"] is None
 
 
 def test_benchmark_rejects_invalid_report_contract():
-
     cases = [
         make_case(),
     ]
@@ -952,7 +1392,6 @@ def test_benchmark_rejects_invalid_report_contract():
         provider_name: str,
         dataset_path=None,
     ):
-
         return FakeRunner(
             provider_name=provider_name,
             report="invalid-report",
@@ -966,5 +1405,558 @@ def test_benchmark_rejects_invalid_report_contract():
     report = benchmark.run(cases=cases)
 
     assert report["summary"]["failed_providers"] == 2
+    assert report["provider_runs"]["gemini"]["error_type"] == "TypeError"
+
+
+# ==========================================================
+# PERSISTÊNCIA INTEGRADA COM BENCHMARK HISTORY
+# ==========================================================
+
+
+def test_benchmark_runner_persists_report_when_history_is_injected(tmp_path):
+    cases = [
+        make_case(),
+    ]
+
+    history = BenchmarkHistory(
+        tmp_path / "integrated_benchmark_history.sqlite3",
+    )
+
+    benchmark = make_benchmark(
+        providers=["gemini", "openai"],
+        cases=cases,
+        history_store=history,
+    )
+
+    report = benchmark.run(
+        cases=cases,
+        benchmark_id="integrated-001",
+    )
+
+    stored_report = history.get_benchmark("integrated-001")
+
+    assert stored_report is not None
+    assert stored_report == report
+
+    assert history.count_benchmarks() == 1
+
+    summaries = history.list_benchmarks()
+
+    assert summaries["pagination"]["total"] == 1
+    assert summaries["items"][0]["benchmark_id"] == "integrated-001"
+
+
+def test_benchmark_runner_persists_partial_provider_failures(tmp_path):
+    cases = [
+        make_case(),
+    ]
+
+    history = BenchmarkHistory(
+        tmp_path / "partial_benchmark_history.sqlite3",
+    )
+
+    benchmark = make_benchmark(
+        providers=["gemini", "openai", "anthropic"],
+        cases=cases,
+        history_store=history,
+        errors={
+            "openai": RuntimeError("Falha simulada."),
+        },
+    )
+
+    report = benchmark.run(
+        cases=cases,
+        benchmark_id="partial-001",
+    )
+
+    stored_report = history.get_benchmark("partial-001")
+
+    assert stored_report == report
+
+    assert stored_report["summary"]["completed_providers"] == 2
+    assert stored_report["summary"]["failed_providers"] == 1
+
+    assert stored_report["provider_runs"]["openai"]["execution_status"] == "error"
+
+    summary = history.list_benchmarks()["items"][0]
+
+    assert summary["summary"]["completed_providers"] == 2
+    assert summary["summary"]["failed_providers"] == 1
+    assert summary["summary"]["all_providers_completed"] is False
+
+
+def test_benchmark_runner_does_not_persist_without_history_store():
+    cases = [
+        make_case(),
+    ]
+
+    benchmark = make_benchmark(
+        providers=["gemini", "openai"],
+        cases=cases,
+    )
+
+    assert benchmark.history_store is None
+
+    report = benchmark.run(
+        cases=cases,
+        benchmark_id="without-history-001",
+    )
+
+    assert report["benchmark_id"] == "without-history-001"
+
+    assert benchmark.history_store is None
+
+
+def test_benchmark_runner_propagates_history_persistence_errors(
+    tmp_path,
+    monkeypatch,
+):
+    cases = [
+        make_case(),
+    ]
+
+    history = BenchmarkHistory(
+        tmp_path / "failing_benchmark_history.sqlite3",
+    )
+
+    def fail_save(report):
+        raise RuntimeError("Falha simulada no armazenamento.")
+
+    monkeypatch.setattr(
+        history,
+        "save_benchmark",
+        fail_save,
+    )
+
+    benchmark = make_benchmark(
+        providers=["gemini", "openai"],
+        cases=cases,
+        history_store=history,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Falha simulada no armazenamento",
+    ):
+        benchmark.run(
+            cases=cases,
+            benchmark_id="persistence-error-001",
+        )
+
+    assert history.count_benchmarks() == 0
+
+
+def test_benchmark_runner_does_not_overwrite_existing_history_record(tmp_path):
+    cases = [
+        make_case(),
+    ]
+
+    history = BenchmarkHistory(
+        tmp_path / "immutable_benchmark_history.sqlite3",
+    )
+
+    benchmark = make_benchmark(
+        providers=["gemini", "openai"],
+        cases=cases,
+        history_store=history,
+    )
+
+    first_report = benchmark.run(
+        cases=cases,
+        benchmark_id="immutable-001",
+    )
+
+    stored_before = history.get_benchmark("immutable-001")
+
+    assert stored_before == first_report
+
+    with pytest.raises(
+        ValueError,
+        match="já está armazenado",
+    ):
+        benchmark.run(
+            cases=cases,
+            benchmark_id="immutable-001",
+        )
+
+    stored_after = history.get_benchmark("immutable-001")
+
+    assert stored_after == stored_before
+    assert history.count_benchmarks() == 1
+
+
+# ==========================================================
+# REGRESSÕES DE REPETIBILIDADE E CUSTOS
+# ==========================================================
+
+
+def test_metric_snapshot_preserves_analysis_mode_adherence():
+    """Preserva a aderência ao modo de análise no snapshot."""
+
+    adherence = {
+        "expected_cases": 3,
+        "observed_cases": 3,
+        "unobserved_cases": 0,
+        "matches": 2,
+        "mismatches": 1,
+        "rate": 66.67,
+    }
+
+    report = {
+        "summary": {
+            "total_cases": 3,
+            "evaluated_cases": 3,
+            "pass_rate": 66.67,
+        },
+        "metadata": {
+            "metrics": {
+                "summary": {
+                    "analysis_mode_adherence": adherence,
+                },
+            },
+        },
+    }
+
+    snapshot = BenchmarkRunner._metric_snapshot(report)
+
+    assert snapshot["analysis_mode_adherence"] == adherence
+
+
+def test_metric_snapshot_returns_none_when_no_cases_were_evaluated():
+    """Ausência de avaliação não deve virar aprovação de zero por cento."""
+
+    report = {
+        "summary": {
+            "total_cases": 4,
+            "evaluated_cases": 0,
+            "passed_cases": 0,
+            "failed_cases": 0,
+            "error_cases": 0,
+            "skipped_cases": 4,
+            "pass_rate": 0.0,
+        },
+    }
+
+    snapshot = BenchmarkRunner._metric_snapshot(report)
+
+    assert snapshot["total_cases"] == 4
+    assert snapshot["evaluated_cases"] == 0
+    assert snapshot["pass_rate"] is None
+    assert snapshot["skipped_rate"] == 100.0
+
+
+def test_case_repeatability_excludes_skipped_score_but_preserves_usage():
+    """Skipped não contamina score, mas mantém consumo e duração."""
+
+    repetitions = [
+        {
+            "execution_status": "completed",
+            "report": {
+                "results": [
+                    {
+                        "case_id": "total_orders",
+                        "status": "skipped",
+                        "score": 0.0,
+                        "duration_ms": 100.0,
+                        "cache_hit": True,
+                        "metadata": {
+                            "llm_metrics": {
+                                "tokens": {
+                                    "input": 100,
+                                    "output": 50,
+                                    "total": 150,
+                                },
+                            },
+                        },
+                    },
+                ],
+            },
+        },
+        {
+            "execution_status": "completed",
+            "report": {
+                "results": [
+                    {
+                        "case_id": "total_orders",
+                        "status": "passed",
+                        "score": 0.9,
+                        "duration_ms": 200.0,
+                        "cache_hit": False,
+                        "metadata": {
+                            "llm_metrics": {
+                                "tokens": {
+                                    "input": 200,
+                                    "output": 100,
+                                    "total": 300,
+                                },
+                            },
+                        },
+                    },
+                ],
+            },
+        },
+    ]
+
+    comparison = BenchmarkRunner._build_case_repeatability(
+        repetition_runs=repetitions,
+        requested_runs=2,
+    )
+
+    case = comparison["total_orders"]
+
+    assert case["observed_runs"] == 2
+    assert case["passed_runs"] == 1
+    assert case["failed_or_error_runs"] == 0
+    assert case["skipped_runs"] == 1
+
+    metrics = case["metrics"]
+
+    # O skipped não entra na taxa de aprovação.
+    assert metrics["pass_rate"]["sample_count"] == 1
+    assert metrics["pass_rate"]["mean"] == 100.0
+
+    # Seu score padrão zero também não reduz a média.
+    assert metrics["score"]["sample_count"] == 1
+    assert metrics["score"]["mean"] == pytest.approx(0.9)
+
+    # Duração e cache continuam sendo observados.
+    assert metrics["duration_ms"]["sample_count"] == 2
+    assert metrics["duration_ms"]["mean"] == 150.0
+
+    assert metrics["cache_hit_rate"]["sample_count"] == 2
+    assert metrics["cache_hit_rate"]["mean"] == 50.0
+
+    # Tokens consumidos continuam presentes.
+    assert metrics["input_tokens"]["sample_count"] == 2
+    assert metrics["input_tokens"]["mean"] == 150.0
+
+    assert metrics["output_tokens"]["mean"] == 75.0
+    assert metrics["total_tokens"]["mean"] == 225.0
+
+
+def test_repeatability_separates_complete_costs_from_incomplete_subtotals():
+    """Custos incompletos não contaminam a média de custo total."""
+
+    cases = [make_case()]
+
+    complete_report = make_report(
+        "gemini",
+        cases,
+    )
+
+    complete_report["token_cost_summary"] = {
+        "currency": "USD",
+        "is_complete": True,
+        "estimated_cost_usd": 0.000000123456,
+        "requests_estimated": 2,
+        "requests_unestimated": 0,
+        "cases_with_cost_data": 1,
+        "cases_without_cost_data": 0,
+    }
+
+    incomplete_report = make_report(
+        "gemini",
+        cases,
+    )
+
+    incomplete_report["token_cost_summary"] = {
+        "currency": "USD",
+        "is_complete": False,
+        "estimated_cost_usd": 0.25,
+        "requests_estimated": 1,
+        "requests_unestimated": 1,
+        "cases_with_cost_data": 1,
+        "cases_without_cost_data": 0,
+    }
+
+    report_without_cost = make_report(
+        "gemini",
+        cases,
+    )
+
+    repetitions = [
+        {
+            "execution_status": "completed",
+            "report": complete_report,
+        },
+        {
+            "execution_status": "completed",
+            "report": incomplete_report,
+        },
+        {
+            "execution_status": "completed",
+            "report": report_without_cost,
+        },
+    ]
+
+    summary = BenchmarkRunner._build_repeatability_summary(
+        repetition_runs=repetitions,
+        requested_runs=3,
+    )
+
+    cost_metrics = summary["metrics"]
+
+    # Somente o custo explicitamente completo entra na média.
+    estimated_cost = cost_metrics["estimated_cost_usd"]
+
+    assert estimated_cost["sample_count"] == 1
+    assert estimated_cost["missing_runs"] == 2
+    assert estimated_cost["mean"] == pytest.approx(0.000000123456)
+
+    # O subtotal incompleto permanece em uma métrica separada.
+    known_subtotal = cost_metrics["known_cost_subtotal_usd"]
+
+    assert known_subtotal["sample_count"] == 1
+    assert known_subtotal["missing_runs"] == 2
+    assert known_subtotal["mean"] == pytest.approx(0.25)
+
+    assert summary["cost_observations"] == {
+        "requested_runs": 3,
+        "observed_runs": 2,
+        "complete_runs": 1,
+        "incomplete_runs": 1,
+        "missing_runs": 1,
+    }
+
+
+def test_repeatability_uses_report_level_cost_summary_as_source_of_truth():
+    """O resumo financeiro principal tem prioridade sobre métricas legadas."""
+
+    cases = [make_case()]
+
+    report = make_report(
+        "gemini",
+        cases,
+    )
+
+    report["token_cost_summary"] = {
+        "currency": "USD",
+        "is_complete": True,
+        "estimated_cost_usd": 0.005,
+    }
+
+    report["metadata"]["metrics"]["summary"]["llm_usage"]["token_cost_estimate"] = {
+        "is_complete": False,
+        "estimated_cost_usd": 99.0,
+    }
+
+    summary = BenchmarkRunner._build_repeatability_summary(
+        repetition_runs=[
+            {
+                "execution_status": "completed",
+                "report": report,
+            },
+        ],
+        requested_runs=1,
+    )
+
+    estimated_cost = summary["metrics"]["estimated_cost_usd"]
+
+    assert estimated_cost["sample_count"] == 1
+    assert estimated_cost["mean"] == pytest.approx(0.005)
+
+    assert summary["metrics"]["known_cost_subtotal_usd"]["sample_count"] == 0
+
+
+def test_repeatability_preserves_small_financial_values():
+    """A precisão estatística não deve arredondar custos pequenos para zero."""
+
+    summary = BenchmarkRunner._build_repeatability_summary(
+        repetition_runs=[
+            {
+                "execution_status": "completed",
+                "report": {
+                    "run_id": "small-cost-run",
+                    "summary": {
+                        "total_cases": 1,
+                        "evaluated_cases": 1,
+                        "pass_rate": 100.0,
+                    },
+                    "results": [],
+                    "metadata": {},
+                    "token_cost_summary": {
+                        "is_complete": True,
+                        "estimated_cost_usd": 0.000000123456,
+                    },
+                },
+            },
+        ],
+        requested_runs=1,
+    )
+
+    estimated_cost = summary["metrics"]["estimated_cost_usd"]
+
+    assert estimated_cost["mean"] == pytest.approx(0.000000123456)
+
+
+def test_benchmark_rejects_empty_mapping_as_invalid_report():
+    """Um dicionário vazio não deve ser classificado como execução concluída."""
+
+    cases = [make_case()]
+
+    def runner_factory(
+        provider_name: str,
+        dataset_path=None,
+    ):
+        return FakeRunner(
+            provider_name=provider_name,
+            report={},
+        )
+
+    benchmark = BenchmarkRunner(
+        providers=["gemini", "openai"],
+        runner_factory=runner_factory,
+    )
+
+    report = benchmark.run(cases=cases)
+
+    assert report["summary"]["completed_providers"] == 0
+    assert report["summary"]["failed_providers"] == 2
+
+    for provider in ("gemini", "openai"):
+        execution = report["provider_runs"][provider]
+
+        assert execution["execution_status"] == "error"
+        assert execution["error_type"] == "TypeError"
+        assert execution["report"] is None
+
+
+def test_benchmark_rejects_report_with_invalid_result_entries():
+    """Resultados sem case_id não atendem ao contrato mínimo."""
+
+    cases = [make_case()]
+
+    invalid_report = {
+        "run_id": "invalid-report",
+        "summary": {
+            "total_cases": 1,
+        },
+        "results": [
+            {
+                "status": "passed",
+                "score": 1.0,
+            },
+        ],
+        "metadata": {},
+    }
+
+    def runner_factory(
+        provider_name: str,
+        dataset_path=None,
+    ):
+        return FakeRunner(
+            provider_name=provider_name,
+            report=invalid_report,
+        )
+
+    benchmark = BenchmarkRunner(
+        providers=["gemini", "openai"],
+        runner_factory=runner_factory,
+    )
+
+    report = benchmark.run(cases=cases)
+
+    assert report["summary"]["failed_providers"] == 2
 
     assert report["provider_runs"]["gemini"]["error_type"] == "TypeError"
+    assert report["provider_runs"]["openai"]["error_type"] == "TypeError"

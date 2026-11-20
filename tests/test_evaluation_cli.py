@@ -14,6 +14,38 @@ from ai_analyst.evaluation import cli
 from ai_analyst.evaluation.dataset import load_evaluation_dataset
 
 # ==========================================================
+# IDENTIFICADORES ESPERADOS DO DATASET
+# ==========================================================
+
+EXPECTED_SQL_CASE_IDS = {
+    "total_orders",
+    "orders_by_status",
+    "cancellation_rate",
+    "financial_breakdown",
+    "monthly_orders",
+    "delivery_by_city",
+    "ratings_by_category",
+    "payment_distribution",
+    "rain_delivery_comparison",
+    "operational_overview",
+    "top_restaurants_delivered",
+    "combined_filters_q4",
+    "category_vehicle_multi_join",
+    "unrated_delivered_orders",
+    "delivered_without_delivery_time",
+    "top_categories_revenue",
+}
+
+EXPECTED_BEHAVIORAL_CASE_IDS = {
+    "clarification_restaurant_performance",
+    "unanswerable_net_profit",
+    "partial_city_delivery_performance",
+}
+
+EXPECTED_CASE_IDS = EXPECTED_SQL_CASE_IDS | EXPECTED_BEHAVIORAL_CASE_IDS
+
+
+# ==========================================================
 # FIXTURES E DADOS DE TESTE
 # ==========================================================
 
@@ -27,9 +59,16 @@ def cases():
 
 @pytest.fixture
 def sample_case(cases):
-    """Disponibiliza um cenário válido do dataset."""
+    """Disponibiliza um cenário SQL válido do dataset."""
 
     return cases[0]
+
+
+@pytest.fixture
+def sample_behavioral_case(cases):
+    """Disponibiliza um cenário comportamental do dataset."""
+
+    return next(case for case in cases if case.evaluation_type != "sql_result")
 
 
 class FakeSQLExecutor:
@@ -207,7 +246,7 @@ def test_build_parser_restricts_providers():
 def test_load_cases_loads_real_dataset():
     cases = cli.load_cases()
 
-    assert len(cases) == 10
+    assert len(cases) == 19
 
     assert all(case.case_id for case in cases)
 
@@ -215,7 +254,18 @@ def test_load_cases_loads_real_dataset():
 
     case_ids = {case.case_id for case in cases}
 
-    assert "operational_overview" in case_ids
+    assert case_ids == EXPECTED_CASE_IDS
+
+    sql_cases = [case for case in cases if case.evaluation_type == "sql_result"]
+
+    behavioral_cases = [case for case in cases if case.evaluation_type != "sql_result"]
+
+    assert len(sql_cases) == 16
+    assert len(behavioral_cases) == 3
+
+    assert {case.case_id for case in sql_cases} == EXPECTED_SQL_CASE_IDS
+
+    assert {case.case_id for case in behavioral_cases} == EXPECTED_BEHAVIORAL_CASE_IDS
 
 
 def test_load_cases_rejects_empty_dataset(monkeypatch):
@@ -286,6 +336,7 @@ def test_select_cases_returns_all_cases_when_no_filter(cases):
     )
 
     assert selected == cases
+    assert len(selected) == 19
 
 
 def test_select_cases_rejects_unknown_ids(cases):
@@ -297,6 +348,69 @@ def test_select_cases_rejects_unknown_ids(cases):
             cases,
             ["unknown_case"],
         )
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "top_restaurants_delivered",
+        "combined_filters_q4",
+        "category_vehicle_multi_join",
+        "unrated_delivered_orders",
+        "delivered_without_delivery_time",
+        "top_categories_revenue",
+    ],
+)
+def test_select_cases_accepts_new_advanced_sql_scenarios(cases, case_id):
+    selected = cli.select_cases(
+        cases,
+        [case_id],
+    )
+
+    assert len(selected) == 1
+    assert selected[0].case_id == case_id
+    assert selected[0].evaluation_type == "sql_result"
+
+
+@pytest.mark.parametrize(
+    ("case_id", "evaluation_type", "expected_behavior"),
+    [
+        (
+            "clarification_restaurant_performance",
+            "clarification",
+            "ask_clarification",
+        ),
+        (
+            "unanswerable_net_profit",
+            "unanswerable",
+            "abstain",
+        ),
+        (
+            "partial_city_delivery_performance",
+            "partial_answer",
+            "partial_answer",
+        ),
+    ],
+)
+def test_select_cases_accepts_behavioral_scenarios(
+    cases,
+    case_id,
+    evaluation_type,
+    expected_behavior,
+):
+    selected = cli.select_cases(
+        cases,
+        [case_id],
+    )
+
+    assert len(selected) == 1
+
+    case = selected[0]
+
+    assert case.case_id == case_id
+    assert case.evaluation_type == evaluation_type
+    assert case.expected_behavior == expected_behavior
+    assert case.reference_sql is None
 
 
 # ==========================================================
@@ -354,7 +468,7 @@ def test_write_json_report_creates_valid_file(tmp_path):
     payload = {
         "provider": "gemini",
         "value": Decimal("150.50"),
-        "cases": 10,
+        "cases": 19,
     }
 
     saved_path = cli.write_json_report(
@@ -369,7 +483,7 @@ def test_write_json_report_creates_valid_file(tmp_path):
 
     assert loaded["provider"] == "gemini"
     assert loaded["value"] == 150.50
-    assert loaded["cases"] == 10
+    assert loaded["cases"] == 19
 
 
 # ==========================================================
@@ -547,10 +661,10 @@ def test_main_lists_cases_without_running_evaluation(
     captured = capsys.readouterr()
 
     assert exit_code == cli.EXIT_SUCCESS
-    assert "Total de cenários: 10" in captured.out
-    assert "total_orders" in captured.out
-    assert "payment_distribution" in captured.out
-    assert "operational_overview" in captured.out
+    assert "Total de cenários: 19" in captured.out
+
+    for case_id in EXPECTED_CASE_IDS:
+        assert case_id in captured.out
 
 
 def test_main_requires_explicit_llm_authorization():
@@ -772,6 +886,68 @@ def test_main_returns_error_when_dataset_loading_fails(
     )
 
     assert exit_code == cli.EXIT_ERROR
+
+
+def test_main_returns_error_without_traceback_for_unknown_case(
+    monkeypatch,
+    cases,
+    capsys,
+):
+    monkeypatch.setattr(
+        cli,
+        "load_cases",
+        lambda path=None: cases,
+    )
+
+    exit_code = cli.main(
+        [
+            "--validate-only",
+            "--case",
+            "cenario_inexistente",
+        ]
+    )
+
+    captured = capsys.readouterr()
+
+    assert exit_code == cli.EXIT_ERROR
+    assert "Erro ao selecionar cenários:" in captured.err
+    assert "cenario_inexistente" in captured.err
+    assert "Utilize --list-cases" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_main_preserves_traceback_for_unexpected_case_selection_error(
+    monkeypatch,
+    cases,
+    capsys,
+):
+    monkeypatch.setattr(
+        cli,
+        "load_cases",
+        lambda path=None: cases,
+    )
+
+    def fail_selection(*args, **kwargs):
+        raise RuntimeError("Falha inesperada na seleção")
+
+    monkeypatch.setattr(
+        cli,
+        "select_cases",
+        fail_selection,
+    )
+
+    exit_code = cli.main(
+        [
+            "--validate-only",
+        ]
+    )
+
+    captured = capsys.readouterr()
+
+    assert exit_code == cli.EXIT_ERROR
+    assert "Erro inesperado ao selecionar cenários" in captured.err
+    assert "Falha inesperada na seleção" in captured.err
+    assert "Traceback (most recent call last)" in captured.err
 
 
 def test_main_returns_error_when_evaluation_fails(

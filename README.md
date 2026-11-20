@@ -1,17 +1,18 @@
-<!-- Rewritten README. Assets listed in docs/assets/README.md are recorded manually. -->
+
+<!-- Main project documentation. Visual assets are recorded manually; see docs/assets/README.md. -->
 <a id="top"></a>
 
 <div align="center">
 
-<img src="https://capsule-render.vercel.app/api?type=waving&color=0:0b1020,50:3b0764,100:0e7490&height=190&section=header&text=AI%20Business%20Analyst&fontSize=46&fontColor=ffffff&fontAlignY=40&desc=Ask%20business%20questions.%20Get%20secure%20SQL%2C%20charts%20and%20insights.&descAlignY=62&descSize=16" width="100%" alt="AI Business Analyst"/>
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:0b1020,50:3b0764,100:0e7490&height=190&section=header&text=AI%20Business%20Analyst&fontSize=46&fontColor=ffffff&fontAlignY=40&desc=Business%20Intelligence%20%7C%20LLM%20Evaluation%20%7C%20Secure%20SQL&descAlignY=62&descSize=16" width="100%" alt="AI Business Analyst"/>
 
-<img src="https://readme-typing-svg.demolab.com?font=Fira+Code&weight=500&size=20&duration=2800&pause=900&color=00E5FF&center=true&vCenter=true&width=640&height=34&lines=AI-Powered+Business+Intelligence;Multi-LLM+Orchestration;Natural+Language+to+Secure+SQL;Automated+Business+Analysis;From+Questions+to+Actionable+Insights" alt="Typing animation: AI-Powered Business Intelligence, Multi-LLM Orchestration, Natural Language to Secure SQL"/>
+<img src="https://readme-typing-svg.demolab.com?font=Fira+Code&weight=500&size=20&duration=2800&pause=900&color=00E5FF&center=true&vCenter=true&width=680&height=34&lines=AI-Powered+Business+Intelligence;Multi-LLM+Orchestration;Natural+Language+to+Secure+SQL;LLM+Benchmark+Evaluation;From+Questions+to+Actionable+Insights" alt="AI Business Analyst capabilities"/>
 
 <br/>
 
 ![Python](https://img.shields.io/badge/Python-3.11%2B-0b1020?style=for-the-badge&logo=python&logoColor=00E5FF)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0b1020?style=for-the-badge&logo=fastapi&logoColor=00E5FF)
-![Next.js](https://img.shields.io/badge/Next.js-0b1020?style=for-the-badge&logo=nextdotjs&logoColor=8B5CF6)
+![Next.js](https://img.shields.io/badge/Next.js-16.4.6-0b1020?style=for-the-badge&logo=nextdotjs&logoColor=8B5CF6)
 ![TypeScript](https://img.shields.io/badge/TypeScript-0b1020?style=for-the-badge&logo=typescript&logoColor=8B5CF6)
 ![DuckDB](https://img.shields.io/badge/DuckDB-0b1020?style=for-the-badge&logo=duckdb&logoColor=00E5FF)
 ![SQLGlot](https://img.shields.io/badge/SQLGlot-guardrails-0b1020?style=for-the-badge&logoColor=8B5CF6)
@@ -32,88 +33,137 @@
 
 # English
 
-**AI Business Analyst is an AI-powered business intelligence product, not a simple chatbot.** A user asks a business question in natural language; an agent turns it into SQL, a guardrail layer validates the query at the AST level, a read-only DuckDB connection executes it, and the application returns a table, a chart and a written business interpretation, with the whole execution timeline visible.
+**AI Business Analyst is an AI-powered business intelligence and LLM evaluation product, not a simple chatbot.**
 
-> **Status:** active development (v0.1.0). It runs locally; there is no hosted deployment and no production claim. The dataset is synthetic.
+It transforms natural-language business questions into validated SQL queries, executes them against a read-only analytical database, and returns results with charts and written business insights.
 
-**Contents:** [Product experience](#product-experience) · [Capabilities](#core-capabilities) · [Architecture](#architecture) · [Security](#security-and-reliability) · [Dataset](#dataset) · [Stack](#technology-stack) · [Installation](#installation) · [Testing](#testing-and-quality) · [Automation](#automation) · [Roadmap](#roadmap)
+The platform also includes an AI Evaluation Engine for browsing benchmark history, inspecting evaluation reports and comparing compatible benchmark runs.
+
+> **Status:** Active development (v0.1.0). The application runs locally; there is no hosted deployment or production claim. The business dataset is synthetic.
+
+**Contents:** [Product experience](#product-experience) · [Core capabilities](#core-capabilities) · [AI Evaluation Engine](#ai-evaluation-engine) · [Architecture](#architecture) · [Security](#security-and-reliability) · [Dataset](#dataset) · [Technology stack](#technology-stack) · [Installation](#installation) · [Testing](#testing-and-quality) · [Automation](#automation) · [Roadmap](#roadmap)
 
 ## Product experience
 
-<!-- When docs/assets/demo.gif exists, replace the note below with:
-<p align="center"><img src="docs/assets/demo.gif" width="860" alt="Demo: question, SQL, results, chart and business interpretation"/></p>
+<p align="center">
+  <img src="docs/assets/dashboard.png" width="860" alt="AI Business Analyst dashboard showing monthly delivered and cancelled orders, chart and results table"/>
+</p>
+
+<!-- When docs/assets/demo.gif is recorded from the real application, add:
+<p align="center"><img src="docs/assets/demo.gif" width="860" alt="AI Business Analyst demonstration"/></p>
 -->
 
-> **Demo GIF: pending recording.** The real-application GIF (`docs/assets/demo.gif`) has to be recorded on a machine running the app with an LLM key. Recording instructions are in [`docs/assets/README.md`](docs/assets/README.md). No simulated screenshots are used here.
+> **Demo GIF: pending recording.** Visual assets must be captured from the real running application. See [`docs/assets/README.md`](docs/assets/README.md) for recording instructions. No simulated screenshots are presented as product evidence.
 
-| Step | What happens | Where it lives |
+The product has two main workflows:
+
+| Workflow | What it does | Main implementation |
 |---|---|---|
-| 1 | The user asks a business question | `frontend/app/page.tsx` |
-| 2 | The agent interprets the request and builds schema context | `agent/context.py`, `agent/business_analyst.py` |
-| 3 | The selected LLM provider generates SQL | `agent/sql_generator.py`, `llm/` |
-| 4 | SQLGlot guardrails validate the query | `security/guardrails.py` |
-| 5 | Read-only DuckDB executes it (up to 2 correction attempts on recoverable errors) | `agent/sql_executor.py`, `data/db.py` |
-| 6 | Results are interpreted and a chart configuration is built | `agent/response_generator.py` |
-| 7 | The UI shows table, chart, explanation and execution timeline | `components/agent-timeline.tsx`, `components/analytics-chart.tsx` |
+| Business analysis | Turns a natural-language question into a validated SQL query, executes it and presents insights | `src/ai_analyst/agent/`, `src/ai_analyst/api/` |
+| LLM evaluation | Exposes benchmark history, report details and historical comparisons | `src/ai_analyst/evaluation/`, `src/ai_analyst/api/evaluation.py` |
 
-### Pipeline at a glance
+### Business analysis pipeline
 
-The block below is an **illustrative visualization of the workflow, not live terminal output.** To show a real run, record one with [ScreenToGif](https://www.screentogif.com/) or [asciinema](https://asciinema.org/) and save it under `docs/assets/`.
+1. The user submits a business question.
+2. The agent interprets the request and builds schema context.
+3. The selected LLM provider generates SQL.
+4. SQLGlot guardrails validate the query at the AST level.
+5. A read-only DuckDB connection executes the approved query.
+6. Results are interpreted and a chart configuration is generated.
+7. The UI presents the SQL, results, chart, business explanation and execution timeline.
 
-```text
-[ SYSTEM    ] AI BUSINESS ANALYST INITIALIZED
-[ AGENT     ] Interpreting business question...
-[ LLM       ] Generating SQL query...
-[ SECURITY  ] Validating SQL AST...
-[ DATABASE  ] Executing analytical query (read-only)...
-[ ANALYTICS ] Processing results...
-[ INSIGHT   ] Generating business explanation...
-[ COMPLETE  ] Analysis ready.
-```
+### Evaluation workflow
+
+1. Benchmark runs produce evaluation reports.
+2. The Evaluation Engine exposes historical benchmark records.
+3. A user opens a report to inspect its evaluation details.
+4. Compatible reports can be compared to identify metric changes, improvements and regressions.
 
 ## Core capabilities
 
-<table>
-<tr>
-<td width="50%" valign="top">
+### AI business intelligence
 
-**AI business intelligence**
-- Natural-language questions over a delivery marketplace
-- SQL generation, result interpretation and written explanations
-- Table and chart output (Recharts)
+- Natural-language questions over a synthetic delivery marketplace.
+- LLM-generated SQL followed by AST-based validation.
+- Analytical results presented in tables and charts.
+- Written business interpretations.
+- Execution timeline with individual processing stages.
 
-**Multi-LLM architecture**
-- Gemini, OpenAI and Anthropic behind a common provider interface
-- Provider chosen per request; default models: `gemini-2.5-flash`, `gpt-4.1-mini`, `claude-haiku-4-5-20251001`
-- Retry with exponential backoff for transient failures (3 attempts)
+### Multi-LLM architecture
 
-**Agent orchestration**
-- Staged workflow: cache lookup, SQL generation, validation, execution, response, chart
-- Up to 2 SQL correction attempts on recoverable errors
-- In-memory result cache (30 min TTL, 100 entries)
+- Provider abstraction for Gemini, OpenAI and Anthropic.
+- Provider and model selection through the application architecture.
+- Retry logic with exponential backoff for transient failures.
+- Controlled handling of provider errors, rate limits and timeouts.
 
-</td>
-<td width="50%" valign="top">
+Each provider requires its own API credentials for live requests. Automated tests use controlled test doubles where external provider calls are not required.
 
-**Analysis management**
-- Persistent history in SQLite with search, filters and pagination
-- Pin, lock, archive, rename, delete and restore analyses
-- Projects to organize analyses
+### Agent orchestration
 
-**Observability**
-- `X-Request-ID` on every API response
-- Structured logging with request IDs
-- Per-stage timing in the execution timeline
-- LLM metrics endpoint (`GET /metrics/llm`) including retries
+- Staged workflow: cache lookup, SQL generation, validation, execution, response generation and chart generation.
+- Up to two SQL correction attempts for recoverable execution errors.
+- In-memory result cache with a 30-minute TTL and a 100-entry limit.
+- Separation between agent orchestration, provider integrations, security and data access.
 
-**API surface**
-- `GET /health`, `GET /data/catalog`, `POST /analyze`
-- History and project management routes under `/analyses/history` and `/analysis-projects`
-- Interactive docs at `http://127.0.0.1:8000/docs`
+### Analysis management
 
-</td>
-</tr>
-</table>
+- Persistent analysis history in SQLite.
+- Search, status and project filters.
+- Pagination and archived-record visibility.
+- Pin, lock, archive, rename, delete and restore operations.
+- Projects to organize analyses.
+
+### Observability
+
+- `X-Request-ID` on API responses.
+- Structured logs with request identifiers.
+- Per-stage execution timing.
+- LLM metrics endpoint (`GET /metrics/llm`), including retry information.
+- Recorded execution steps and controlled error information.
+
+## AI Evaluation Engine
+
+The AI Evaluation Engine provides a dedicated interface for reviewing historical benchmark runs and examining evaluation results.
+
+**Implemented capabilities:**
+
+- Benchmark history listing.
+- Individual benchmark report details.
+- Historical comparison between compatible reports.
+- Metric-by-metric comparison to identify improvements and regressions.
+- Compatibility checks before comparing reports.
+
+### Comparison constraints
+
+Historical comparison is intentionally restricted to compatible reports. The current comparison logic requires matching dataset, provider and model. It does not represent an unrestricted cross-provider comparison.
+
+Financial cost metrics are excluded from historical comparisons because available cost metadata does not necessarily represent the actual amount billed by a provider.
+
+Main implementation:
+
+| Component | Responsibility |
+|---|---|
+| `src/ai_analyst/evaluation/` | Evaluation and benchmark logic |
+| `src/ai_analyst/api/evaluation.py` | Evaluation API routes |
+| `frontend/app/evaluation/page.tsx` | Evaluation Engine page |
+| `frontend/components/evaluation/benchmark-history.tsx` | Benchmark history, details and comparison interface |
+| `frontend/lib/evaluation.ts` | Frontend API integration |
+
+## API surface
+
+The FastAPI application exposes the following areas:
+
+| Area | Main operations |
+|---|---|
+| Health | `GET /health` |
+| Data catalog | `GET /data/catalog` |
+| Business analysis | `POST /analyze` |
+| LLM metrics | `GET /metrics/llm` |
+| Analysis history | History search, filters, pagination and record management |
+| Analysis projects | Project creation and management |
+| Evaluation Engine | Benchmark history, report details and historical comparison |
+
+Interactive API documentation is available locally at `http://127.0.0.1:8000/docs`.
 
 ## Architecture
 
@@ -121,152 +171,208 @@ The block below is an **illustrative visualization of the workflow, not live ter
 flowchart TD
     U["User"] --> FE["Next.js, React, TypeScript"]
     FE --> API["FastAPI"]
+
     API --> AG["Business Analyst Agent"]
-    AG --> LLM["LLM orchestration: retry and metrics"]
-    LLM --> PGEM["Gemini"]
-    LLM --> POAI["OpenAI"]
-    LLM --> PANT["Anthropic"]
-    AG --> SQLGEN["SQL generation"]
-    SQLGEN --> GUARD["SQLGlot guardrails"]
-    GUARD --> DUCK["DuckDB read-only"]
-    DUCK --> RES["Results"]
-    RES --> EXP["Business explanation"]
-    RES --> VIZ["Chart configuration"]
-    EXP --> FE
-    VIZ --> FE
-    AG -.- CACHE["In-memory cache"]
-    API -.- HIST["SQLite analysis history"]
+    AG --> LLM["LLM orchestration"]
+    LLM --> GEM["Gemini"]
+    LLM --> OAI["OpenAI"]
+    LLM --> ANT["Anthropic"]
+
+    AG --> SQL["SQL generation"]
+    SQL --> GUARD["SQLGlot guardrails"]
+    GUARD --> DB["DuckDB read-only"]
+    DB --> RESULT["Analytical results"]
+    RESULT --> INSIGHT["Business interpretation"]
+    RESULT --> CHART["Chart configuration"]
+    INSIGHT --> FE
+    CHART --> FE
+
+    API --> EVAL["AI Evaluation Engine"]
+    EVAL --> BENCH["Benchmark reports"]
+    BENCH --> HISTORY["Benchmark history"]
+    HISTORY --> DETAIL["Report details"]
+    HISTORY --> COMPARE["Historical comparison"]
+    DETAIL --> FE
+    COMPARE --> FE
+
+    AG -.- CACHE["In-memory result cache"]
+    API -.- AH["SQLite analysis history"]
 ```
 
-**Architectural decisions**
+### Architectural decisions
 
-- **Separation of concerns:** `agent/` (orchestration), `llm/` (providers), `security/` (guardrails), `data/` (databases), `api/` (HTTP).
-- **Provider abstraction:** a factory builds Gemini, OpenAI or Anthropic clients behind one interface and wraps them with retry logic.
-- **SQL validation before execution:** generated SQL is parsed and checked as an AST, never trusted as text.
-- **Read-only analytical access:** DuckDB opens in read-only mode with external access disabled and configuration locked.
-- **Persistence:** analysis history and projects live in SQLite, separate from the analytical DuckDB.
-- **Observability and errors:** request IDs, stage timings, LLM metrics and explicit handling of provider failures and rate limits.
+- **Separation of concerns:** agent orchestration, provider integrations, security, data access and HTTP routes are organized into separate modules.
+- **Provider abstraction:** LLM providers share a common interface, allowing the application to select a provider without coupling the agent to a single SDK.
+- **SQL validation before execution:** generated SQL is parsed and checked as an AST before reaching the database.
+- **Read-only analytical access:** DuckDB runs in read-only mode with external access disabled and configuration locked.
+- **Separate persistence concerns:** analytical data is held in DuckDB, while analysis history and projects use SQLite.
+- **Evaluation compatibility:** historical comparisons check dataset, provider and model compatibility before calculating differences.
+- **Observability:** request IDs, execution timings, LLM metrics and controlled error handling make application behavior easier to inspect.
 
 ## Security and reliability
 
-These are security controls designed to restrict LLM-generated queries to the intended analytical environment. They are not a claim of absolute security.
+These controls are designed to restrict LLM-generated queries to the intended analytical environment. They are not a claim of absolute security.
 
 | Control | Implementation |
 |---|---|
 | AST validation | SQL parsed with SQLGlot before execution |
-| SELECT-only | Any root node other than `SELECT` is rejected |
+| SELECT-only | Root statements other than `SELECT` are rejected |
 | Single statement | Multiple statements are rejected |
-| Blocked functions | File, scan and extension functions (for example `read_csv`, `read_parquet`, `glob`, `pragma`, `install`, `load`) are blocked, including as table sources |
-| Table allowlist | Only `orders`, `restaurants`, `customers` and `couriers`; schema- or catalog-qualified tables are rejected |
-| Read-only database | DuckDB connection with `read_only=True` |
-| No external files | `enable_external_access` disabled and `lock_configuration` enabled |
-| Provider failures | Retry with backoff; failures surfaced as controlled errors and recorded in metrics |
-| SQL correction | Recoverable SQL errors trigger up to 2 correction requests to the LLM |
+| Blocked functions | File, scan and extension functions such as `read_csv`, `read_parquet`, `glob`, `pragma`, `install` and `load` are blocked |
+| Table allowlist | Only `orders`, `restaurants`, `customers` and `couriers` are allowed |
+| Read-only database | DuckDB connection uses `read_only=True` |
+| No external files | `enable_external_access` is disabled and `lock_configuration` is enabled |
+| Provider resilience | Retry with backoff and controlled provider error handling |
+| SQL correction | Recoverable SQL errors can trigger up to two correction attempts |
 
-The repository includes automated tests for the guardrails, SQL executor, LLM retry logic, cache, history and API.
+The repository includes automated tests for SQL guardrails, query execution, LLM retry logic, caching, analysis history, evaluation and API behavior.
 
 ## Dataset
 
-The dataset is **100% synthetic**, generated by `src/ai_analyst/data/generate.py` with a fixed seed (`42`), so every run reproduces the same data.
+The business dataset is **100% synthetic**, generated by `src/ai_analyst/data/generate.py` with a fixed seed (`42`) so that the generated data is reproducible.
 
 | Entity | Records |
-|---|---|
+|---|---:|
 | Restaurants | 200 |
 | Customers | 5,000 |
 | Delivery partners | 300 |
 | Orders | 60,000 |
 
-Five cities, orders from 2025. Patterns were injected on purpose: lunch and dinner peaks, higher demand from Friday to Sunday, and rain increasing delivery time and cancellations. Of the 60,000 orders, 57,828 are delivered and 2,172 are cancelled (a 3.62% cancellation rate).
+The dataset represents a delivery marketplace with five cities and orders from 2025. Generated patterns include lunch and dinner peaks, higher demand from Friday to Sunday, and rain-related increases in delivery time and cancellations.
 
-> Insights reflect these generated rules, not real marketplace behavior, and must not be read as business benchmarks.
+Of the 60,000 orders:
+
+- 57,828 were delivered.
+- 2,172 were cancelled.
+- Cancellation rate: 3.62%.
+
+> Insights reflect the deliberately generated patterns, not real marketplace behavior. They must not be interpreted as real-world business benchmarks.
 
 ## Technology stack
 
 | Layer | Technologies |
 |---|---|
 | Backend | Python 3.11+, FastAPI, Uvicorn, Pydantic |
-| Frontend | Next.js 16, React 19, TypeScript, Tailwind CSS |
+| Frontend | Next.js 16.4.6, React 19, TypeScript, Tailwind CSS |
 | Data | DuckDB, SQLite, Pandas, NumPy |
 | AI | Gemini (`google-genai`), OpenAI, Anthropic |
+| Evaluation | Benchmark runner, evaluation reports and historical comparison |
 | Security | SQLGlot |
 | Visualization | Recharts |
-| Testing | Pytest, TypeScript compiler (`tsc`) |
+| Backend quality | Pytest, Ruff |
+| Frontend quality | ESLint, TypeScript compiler, Next.js production build |
 | Development | Git, GitHub Actions, Node.js, npm |
 
 ## Installation
 
-Flow written for Windows PowerShell; requires Python 3.11+ and Node.js 20.9+.
+Instructions for Windows PowerShell. Requirements: Python 3.11+ and Node.js 20.9+.
+
+### 1. Clone the repository
 
 ```powershell
-# 1. Clone
 git clone https://github.com/nascimentomacedodani487-hue/ai-business-analyst.git
 cd ai-business-analyst
+```
 
-# 2-4. Virtual environment + backend dependencies
+### 2. Configure the backend
+
+```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
+
 pip install -e ".[dev]"
 
-# 5. Configure API keys (set at least one provider key in .env)
 Copy-Item .env.example .env
+```
 
-# 6. Generate the DuckDB database (data/delivery.duckdb)
+Configure the API key for the provider you intend to use in `.env`:
+
+```text
+GEMINI_API_KEY=
+OPENAI_API_KEY=
+ANTHROPIC_API_KEY=
+```
+
+Only the selected provider needs a valid key for live requests. Never commit `.env` or expose API keys in screenshots, logs or documentation.
+
+### 3. Generate the analytical database
+
+```powershell
 python -m ai_analyst.data.db
+```
 
-# 7. Start the API at http://127.0.0.1:8000
+### 4. Start the backend
+
+```powershell
 python -m uvicorn ai_analyst.api.main:app --reload
 ```
 
-In a second terminal:
+The API runs at `http://127.0.0.1:8000`.
+
+### 5. Configure and start the frontend
+
+Open a second terminal:
 
 ```powershell
-# 8-9. Frontend dependencies and API URL
 cd frontend
+
 npm install
+
 "NEXT_PUBLIC_API_URL=http://127.0.0.1:8000" | Out-File -Encoding ascii .env.local
 
-# 10. Start Next.js
 npm run dev
 ```
 
-**11.** Open **http://localhost:3000** (use `localhost`, because the API CORS policy allows only `http://localhost:3000`).
-
-`.env` keys: `GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`. Only the provider you select needs a key. `LLM_PROVIDER` is optional and defaults to `gemini` for code paths without an explicit provider. Never commit `.env`; it is git-ignored.
+Open `http://localhost:3000` in your browser. Use `localhost` because the API CORS configuration allows `http://localhost:3000`.
 
 ## Testing and quality
 
+The following results were verified locally on **November 17, 2026**. They are point-in-time results, not a guarantee that every environment will produce identical execution times.
+
+### Backend
+
 ```powershell
-# Backend
-pytest -q
-
-# Frontend (generate Next.js route types first, then type-check)
-cd frontend
-npx next typegen
-npx tsc --noEmit
-
+python -m pytest -q
+ruff check src tests
+ruff format --check src tests
 ```
 
-Last verified on 2026-11-06 from a clean clone: **195 backend tests passed** and the TypeScript check completed without errors. Tests do not call paid LLM APIs. These are point-in-time results; the [CI workflow](#automation) re-checks them on every push.
+Verified results:
+
+- **1,214 tests passed**.
+- Ruff checks passed.
+- 77 Python files already formatted.
+
+### Frontend
+
+```powershell
+cd frontend
+
+npx eslint .
+npx tsc --noEmit
+npm run build
+```
+
+Verified results:
+
+- ESLint completed without errors or warnings.
+- TypeScript completed without errors.
+- Next.js 16.4.6 production build completed successfully.
+- Static routes generated: `/`, `/_not-found` and `/evaluation`.
+
+The automated test suite does not require paid OpenAI or Anthropic API calls.
 
 ## Automation
 
 | Workflow | Trigger | Purpose |
 |---|---|---|
-| [`ci.yml`](.github/workflows/ci.yml) | Push to `main`, pull requests | Runs `pytest` and the frontend `tsc` check; read-only permissions, no secrets |
-| [`snake.yml`](.github/workflows/snake.yml) | Daily + manual | Generates the contribution snake and publishes it to the `output` branch |
+| [`ci.yml`](.github/workflows/ci.yml) | Push to `main` and pull requests | Runs backend tests and the frontend TypeScript check |
+| [`snake.yml`](.github/workflows/snake.yml) | Daily and manual | Generates the GitHub contribution snake and publishes it to the `output` branch |
 
-<div align="center">
-
-<img src="https://raw.githubusercontent.com/nascimentomacedodani487-hue/ai-business-analyst/output/github-contribution-grid-snake-dark.svg" alt="Contribution snake animation" width="100%"/>
-
-</div>
-
-The snake is decorative and shows the **contribution graph of the owner's GitHub account, not this repository's activity.** It appears only after `snake.yml` has run once: in the repository go to **Settings → Actions → General** and allow actions, then open **Actions → Generate Snake → Run workflow**. The image is served from the `output` branch.
+The contribution snake is decorative. It represents the owner's GitHub contribution graph, not the activity of this repository. It appears after `snake.yml` has run and the generated image has been published to the `output` branch.
 
 <details>
-<summary><b>About the author (GitHub account cards)</b></summary>
-
-<br/>
+<summary><b>About the author</b></summary>
 
 <div align="center">
 
@@ -280,18 +386,28 @@ The snake is decorative and shows the **contribution graph of the owner's GitHub
 
 </div>
 
-The top-languages card reflects the whole account, not only this project. A "now playing" Spotify widget is optional and needs a separate Spotify integration or service; it is not included.
+The top-languages card reflects the entire GitHub account, not only this project.
 
 </details>
 
 ## Roadmap
 
-Only items not yet implemented:
+### Implemented
 
-- [ ] Systematic LLM evaluation (question set with expected SQL, accuracy per model)
-- [ ] Side-by-side provider comparison
-- [ ] Broader automated testing of the frontend
-- [ ] Hosted deployment
+- [x] Natural-language business analysis with LLM-generated SQL.
+- [x] SQL AST guardrails and read-only analytical execution.
+- [x] Multi-provider architecture with retry and observability.
+- [x] Persistent analysis history and project management.
+- [x] AI Evaluation Engine with benchmark history and report details.
+- [x] Historical comparison of compatible benchmark reports.
+
+### Next improvements
+
+- [ ] Expand benchmark datasets and evaluation case coverage.
+- [ ] Cross-provider benchmark comparison with explicit compatibility criteria.
+- [ ] Broader automated frontend testing.
+- [ ] Hosted deployment.
+- [ ] Real application screenshots and demonstration GIF.
 
 <p align="right"><a href="#top">Back to top ↑</a></p>
 
@@ -301,88 +417,137 @@ Only items not yet implemented:
 
 # Português
 
-**O AI Business Analyst é um produto de inteligência de negócios com IA, não um simples chatbot.** O usuário faz uma pergunta de negócio em linguagem natural; um agente a transforma em SQL, uma camada de guardrails valida a consulta no nível da AST, uma conexão DuckDB somente leitura a executa, e a aplicação devolve tabela, gráfico e uma interpretação de negócio escrita, com toda a linha do tempo de execução visível.
+**O AI Business Analyst é um produto de inteligência de negócios com IA e avaliação de LLMs, não um simples chatbot.**
 
-> **Status:** em desenvolvimento ativo (v0.1.0). Roda localmente; não há deploy hospedado nem alegação de produção. Os dados são sintéticos.
+Ele transforma perguntas de negócio em linguagem natural em consultas SQL validadas, executa essas consultas em um banco analítico somente leitura e apresenta resultados com gráficos e interpretações de negócio.
 
-**Conteúdo:** [Experiência do produto](#experiência-do-produto) · [Capacidades](#capacidades) · [Arquitetura](#arquitetura) · [Segurança](#segurança-e-confiabilidade) · [Conjunto de dados](#conjunto-de-dados) · [Tecnologias](#tecnologias) · [Instalação](#instalação) · [Testes](#testes-e-qualidade) · [Automação](#automação-de-workflows) · [Próximos passos](#próximos-passos)
+A plataforma também possui um AI Evaluation Engine para consultar o histórico de benchmarks, inspecionar relatórios de avaliação e comparar execuções compatíveis.
+
+> **Status:** Em desenvolvimento ativo (v0.1.0). A aplicação roda localmente; ainda não há deploy hospedado nem alegação de uso em produção. O conjunto de dados de negócio é sintético.
+
+**Conteúdo:** [Experiência do produto](#experiência-do-produto) · [Capacidades](#capacidades) · [AI Evaluation Engine](#ai-evaluation-engine-1) · [Arquitetura](#arquitetura) · [Segurança](#segurança-e-confiabilidade) · [Dados](#conjunto-de-dados) · [Tecnologias](#tecnologias) · [Instalação](#instalação) · [Testes](#testes-e-qualidade) · [Automação](#automação) · [Próximos passos](#próximos-passos)
 
 ## Experiência do produto
 
-<!-- Quando docs/assets/demo.gif existir, substitua a nota abaixo por:
-<p align="center"><img src="docs/assets/demo.gif" width="860" alt="Demo: pergunta, SQL, resultados, gráfico e interpretação de negócio"/></p>
+<p align="center">
+  <img src="docs/assets/dashboard.png" width="860" alt="Painel do AI Business Analyst com gráfico mensal de pedidos entregues e cancelados e tabela de resultados"/>
+</p>
+
+<!-- Quando docs/assets/demo.gif for gravado a partir da aplicação real, adicione:
+<p align="center"><img src="docs/assets/demo.gif" width="860" alt="Demonstração do AI Business Analyst"/></p>
 -->
 
-> **GIF de demonstração: gravação pendente.** O GIF da aplicação real (`docs/assets/demo.gif`) precisa ser gravado em uma máquina com o app rodando e uma chave de LLM. As instruções estão em [`docs/assets/README.md`](docs/assets/README.md). Nenhuma captura simulada é usada aqui.
+> **GIF de demonstração: gravação pendente.** Os materiais visuais devem ser capturados a partir da aplicação real em execução. Consulte [`docs/assets/README.md`](docs/assets/README.md) para as instruções. Não são utilizadas capturas simuladas como evidência do produto.
 
-| Etapa | O que acontece | Onde está |
+O produto possui dois fluxos principais:
+
+| Fluxo | O que faz | Implementação principal |
 |---|---|---|
-| 1 | O usuário faz uma pergunta de negócio | `frontend/app/page.tsx` |
-| 2 | O agente interpreta o pedido e monta o contexto do schema | `agent/context.py`, `agent/business_analyst.py` |
-| 3 | O provedor de LLM selecionado gera o SQL | `agent/sql_generator.py`, `llm/` |
-| 4 | Os guardrails do SQLGlot validam a consulta | `security/guardrails.py` |
-| 5 | O DuckDB somente leitura executa (até 2 correções em erros recuperáveis) | `agent/sql_executor.py`, `data/db.py` |
-| 6 | Os resultados são interpretados e a configuração do gráfico é montada | `agent/response_generator.py` |
-| 7 | A interface mostra tabela, gráfico, explicação e linha do tempo | `components/agent-timeline.tsx`, `components/analytics-chart.tsx` |
+| Análise de negócio | Transforma uma pergunta em linguagem natural em SQL validado, executa a consulta e apresenta insights | `src/ai_analyst/agent/`, `src/ai_analyst/api/` |
+| Avaliação de LLMs | Disponibiliza histórico de benchmarks, detalhes de relatórios e comparações históricas | `src/ai_analyst/evaluation/`, `src/ai_analyst/api/evaluation.py` |
 
-### O pipeline em resumo
+### Pipeline de análise de negócio
 
-O bloco abaixo é uma **visualização ilustrativa do fluxo, não uma saída real de terminal.** Para mostrar uma execução real, grave com o [ScreenToGif](https://www.screentogif.com/) ou o [asciinema](https://asciinema.org/) e salve em `docs/assets/`.
+1. O usuário envia uma pergunta de negócio.
+2. O agente interpreta a solicitação e monta o contexto do schema.
+3. O provedor de LLM selecionado gera o SQL.
+4. Os guardrails do SQLGlot validam a consulta no nível da AST.
+5. Uma conexão DuckDB somente leitura executa a consulta aprovada.
+6. Os resultados são interpretados e a configuração do gráfico é gerada.
+7. A interface apresenta SQL, resultados, gráfico, explicação de negócio e linha do tempo de execução.
 
-```text
-[ SYSTEM    ] AI BUSINESS ANALYST INITIALIZED
-[ AGENT     ] Interpreting business question...
-[ LLM       ] Generating SQL query...
-[ SECURITY  ] Validating SQL AST...
-[ DATABASE  ] Executing analytical query (read-only)...
-[ ANALYTICS ] Processing results...
-[ INSIGHT   ] Generating business explanation...
-[ COMPLETE  ] Analysis ready.
-```
+### Fluxo de avaliação
+
+1. Execuções de benchmark produzem relatórios de avaliação.
+2. O Evaluation Engine disponibiliza os registros históricos.
+3. O usuário abre um relatório para inspecionar seus detalhes.
+4. Relatórios compatíveis podem ser comparados para identificar mudanças nas métricas, melhorias e regressões.
 
 ## Capacidades
 
-<table>
-<tr>
-<td width="50%" valign="top">
+### Inteligência de negócios com IA
 
-**Inteligência de negócios com IA**
-- Perguntas em linguagem natural sobre um marketplace de delivery
-- Geração de SQL, interpretação dos resultados e explicações escritas
-- Saída em tabela e gráfico (Recharts)
+- Perguntas em linguagem natural sobre um marketplace de delivery sintético.
+- Geração de SQL por LLM, seguida de validação por AST.
+- Resultados analíticos apresentados em tabelas e gráficos.
+- Interpretações de negócio escritas.
+- Linha do tempo com as etapas de processamento.
 
-**Arquitetura multi-LLM**
-- Gemini, OpenAI e Anthropic atrás de uma interface comum de provedor
-- Provedor escolhido por requisição; modelos padrão: `gemini-2.5-flash`, `gpt-4.1-mini`, `claude-haiku-4-5-20251001`
-- Retry com backoff exponencial para falhas transitórias (3 tentativas)
+### Arquitetura multi-LLM
 
-**Orquestração do agente**
-- Fluxo em etapas: consulta ao cache, geração de SQL, validação, execução, resposta, gráfico
-- Até 2 tentativas de correção de SQL em erros recuperáveis
-- Cache de resultados em memória (TTL de 30 min, 100 entradas)
+- Abstração de provedores para Gemini, OpenAI e Anthropic.
+- Seleção de provedor e modelo pela arquitetura da aplicação.
+- Lógica de retry com backoff exponencial para falhas transitórias.
+- Tratamento controlado de erros de provedor, limites de taxa e timeouts.
 
-</td>
-<td width="50%" valign="top">
+Cada provedor exige suas próprias credenciais para chamadas reais. Os testes automatizados utilizam implementações controladas de teste quando não é necessária uma chamada externa.
 
-**Gestão de análises**
-- Histórico persistente em SQLite com busca, filtros e paginação
-- Fixar, bloquear, arquivar, renomear, excluir e restaurar análises
-- Projetos para organizar as análises
+### Orquestração do agente
 
-**Observabilidade**
-- `X-Request-ID` em toda resposta da API
-- Logs estruturados com request IDs
-- Tempo por etapa na linha do tempo de execução
-- Endpoint de métricas de LLM (`GET /metrics/llm`) incluindo retries
+- Fluxo em etapas: consulta ao cache, geração de SQL, validação, execução, geração de resposta e gráfico.
+- Até duas tentativas de correção de SQL em erros recuperáveis.
+- Cache de resultados em memória com TTL de 30 minutos e limite de 100 entradas.
+- Separação entre orquestração, integração com provedores, segurança e acesso a dados.
 
-**Superfície da API**
-- `GET /health`, `GET /data/catalog`, `POST /analyze`
-- Rotas de histórico e projetos em `/analyses/history` e `/analysis-projects`
-- Documentação interativa em `http://127.0.0.1:8000/docs`
+### Gestão de análises
 
-</td>
-</tr>
-</table>
+- Histórico persistente em SQLite.
+- Busca, filtros por status e projeto.
+- Paginação e visualização de registros arquivados.
+- Fixar, bloquear, arquivar, renomear, excluir e restaurar análises.
+- Projetos para organizar análises.
+
+### Observabilidade
+
+- `X-Request-ID` nas respostas da API.
+- Logs estruturados com identificadores de requisição.
+- Tempo de execução por etapa.
+- Endpoint de métricas de LLM (`GET /metrics/llm`), incluindo informações de retry.
+- Registro de etapas de execução e informações controladas de erro.
+
+## AI Evaluation Engine
+
+O AI Evaluation Engine oferece uma interface dedicada para consultar benchmarks históricos e inspecionar resultados de avaliação.
+
+**Funcionalidades implementadas:**
+
+- Listagem do histórico de benchmarks.
+- Detalhes individuais dos relatórios.
+- Comparação histórica entre relatórios compatíveis.
+- Comparação métrica a métrica para identificar melhorias e regressões.
+- Verificação de compatibilidade antes da comparação.
+
+### Restrições da comparação
+
+A comparação histórica é intencionalmente restrita a relatórios compatíveis. A implementação atual exige correspondência de dataset, provedor e modelo. Portanto, ainda não representa uma comparação irrestrita entre provedores diferentes.
+
+Métricas financeiras são excluídas das comparações históricas porque os metadados de custo disponíveis não representam necessariamente o valor efetivamente cobrado pelo provedor.
+
+Implementação principal:
+
+| Componente | Responsabilidade |
+|---|---|
+| `src/ai_analyst/evaluation/` | Lógica de avaliação e benchmarks |
+| `src/ai_analyst/api/evaluation.py` | Rotas da API de avaliação |
+| `frontend/app/evaluation/page.tsx` | Página do Evaluation Engine |
+| `frontend/components/evaluation/benchmark-history.tsx` | Interface de histórico, detalhes e comparação |
+| `frontend/lib/evaluation.ts` | Integração do frontend com a API |
+
+## Superfície da API
+
+A aplicação FastAPI disponibiliza as seguintes áreas:
+
+| Área | Operações principais |
+|---|---|
+| Saúde | `GET /health` |
+| Catálogo de dados | `GET /data/catalog` |
+| Análise de negócio | `POST /analyze` |
+| Métricas de LLM | `GET /metrics/llm` |
+| Histórico de análises | Busca, filtros, paginação e gerenciamento de registros |
+| Projetos de análise | Criação e gerenciamento de projetos |
+| Evaluation Engine | Histórico de benchmarks, detalhes de relatórios e comparação histórica |
+
+A documentação interativa da API fica disponível localmente em `http://127.0.0.1:8000/docs`.
 
 ## Arquitetura
 
@@ -390,160 +555,242 @@ O bloco abaixo é uma **visualização ilustrativa do fluxo, não uma saída rea
 flowchart TD
     U["Usuário"] --> FE["Next.js, React, TypeScript"]
     FE --> API["FastAPI"]
+
     API --> AG["Agente Business Analyst"]
-    AG --> LLM["Orquestração de LLMs: retry e métricas"]
-    LLM --> PGEM["Gemini"]
-    LLM --> POAI["OpenAI"]
-    LLM --> PANT["Anthropic"]
-    AG --> SQLGEN["Geração de SQL"]
-    SQLGEN --> GUARD["Guardrails SQLGlot"]
-    GUARD --> DUCK["DuckDB somente leitura"]
-    DUCK --> RES["Resultados"]
-    RES --> EXP["Explicação de negócio"]
-    RES --> VIZ["Configuração do gráfico"]
-    EXP --> FE
-    VIZ --> FE
+    AG --> LLM["Orquestração de LLMs"]
+    LLM --> GEM["Gemini"]
+    LLM --> OAI["OpenAI"]
+    LLM --> ANT["Anthropic"]
+
+    AG --> SQL["Geração de SQL"]
+    SQL --> GUARD["Guardrails SQLGlot"]
+    GUARD --> DB["DuckDB somente leitura"]
+    DB --> RESULT["Resultados analíticos"]
+    RESULT --> INSIGHT["Interpretação de negócio"]
+    RESULT --> CHART["Configuração do gráfico"]
+    INSIGHT --> FE
+    CHART --> FE
+
+    API --> EVAL["AI Evaluation Engine"]
+    EVAL --> BENCH["Relatórios de benchmark"]
+    BENCH --> HISTORY["Histórico de benchmarks"]
+    HISTORY --> DETAIL["Detalhes dos relatórios"]
+    HISTORY --> COMPARE["Comparação histórica"]
+    DETAIL --> FE
+    COMPARE --> FE
+
     AG -.- CACHE["Cache em memória"]
-    API -.- HIST["SQLite histórico de análises"]
+    API -.- AH["Histórico de análises SQLite"]
 ```
 
-**Decisões de arquitetura**
+### Decisões de arquitetura
 
-- **Separação de responsabilidades:** `agent/` (orquestração), `llm/` (provedores), `security/` (guardrails), `data/` (bancos), `api/` (HTTP).
-- **Abstração de provedores:** uma factory cria clientes Gemini, OpenAI ou Anthropic atrás de uma interface única e os envolve com lógica de retry.
-- **Validação do SQL antes da execução:** o SQL gerado é analisado e checado como AST, nunca confiado como texto.
-- **Acesso analítico somente leitura:** o DuckDB abre em modo somente leitura, com acesso externo desabilitado e configuração travada.
-- **Persistência:** histórico e projetos ficam em SQLite, separado do DuckDB analítico.
-- **Observabilidade e erros:** request IDs, tempos por etapa, métricas de LLM e tratamento explícito de falhas de provedor e limites de taxa.
+- **Separação de responsabilidades:** orquestração do agente, integração com provedores, segurança, acesso a dados e rotas HTTP são organizados em módulos distintos.
+- **Abstração de provedores:** os provedores de LLM compartilham uma interface, permitindo selecionar um modelo sem acoplar o agente a um único SDK.
+- **Validação do SQL antes da execução:** o SQL gerado é analisado e validado como AST antes de chegar ao banco.
+- **Acesso analítico somente leitura:** o DuckDB funciona em modo somente leitura, com acesso externo desabilitado e configuração travada.
+- **Persistência separada por responsabilidade:** os dados analíticos ficam no DuckDB, enquanto histórico de análises e projetos usam SQLite.
+- **Compatibilidade na avaliação:** comparações históricas verificam dataset, provedor e modelo antes de calcular diferenças.
+- **Observabilidade:** request IDs, tempos de execução, métricas de LLM e tratamento controlado de erros facilitam a inspeção do comportamento da aplicação.
 
 ## Segurança e confiabilidade
 
-São controles de segurança projetados para restringir as consultas geradas por LLM ao ambiente analítico pretendido. Não são uma alegação de segurança absoluta.
+Estes controles foram projetados para restringir as consultas geradas por LLM ao ambiente analítico pretendido. Não representam uma alegação de segurança absoluta.
 
 | Controle | Implementação |
 |---|---|
 | Validação por AST | SQL analisado com SQLGlot antes da execução |
-| Somente SELECT | Qualquer nó raiz diferente de `SELECT` é rejeitado |
+| Somente SELECT | Instruções cuja raiz não seja `SELECT` são rejeitadas |
 | Instrução única | Múltiplas instruções são rejeitadas |
-| Funções bloqueadas | Funções de arquivo, scan e extensões (por exemplo `read_csv`, `read_parquet`, `glob`, `pragma`, `install`, `load`) são bloqueadas, inclusive como fonte de tabela |
-| Allowlist de tabelas | Apenas `orders`, `restaurants`, `customers` e `couriers`; tabelas com schema ou catálogo são rejeitadas |
-| Banco somente leitura | Conexão DuckDB com `read_only=True` |
-| Sem arquivos externos | `enable_external_access` desabilitado e `lock_configuration` habilitado |
-| Falhas de provedor | Retry com backoff; falhas viram erros controlados e entram nas métricas |
-| Correção de SQL | Erros de SQL recuperáveis geram até 2 pedidos de correção ao LLM |
+| Funções bloqueadas | Funções de arquivo, scan e extensões como `read_csv`, `read_parquet`, `glob`, `pragma`, `install` e `load` são bloqueadas |
+| Allowlist de tabelas | Apenas `orders`, `restaurants`, `customers` e `couriers` são permitidas |
+| Banco somente leitura | Conexão DuckDB utiliza `read_only=True` |
+| Sem arquivos externos | `enable_external_access` é desabilitado e `lock_configuration` é habilitado |
+| Resiliência dos provedores | Retry com backoff e tratamento controlado de erros |
+| Correção de SQL | Erros recuperáveis podem gerar até duas tentativas de correção |
 
-O repositório inclui testes automatizados para os guardrails, o executor de SQL, o retry de LLM, o cache, o histórico e a API.
+O repositório inclui testes automatizados para guardrails de SQL, execução de consultas, retry de LLM, cache, histórico de análises, avaliação e comportamento da API.
 
 ## Conjunto de dados
 
-Os dados são **100% sintéticos**, gerados por `src/ai_analyst/data/generate.py` com seed fixa (`42`), então toda execução reproduz os mesmos dados.
+O conjunto de dados de negócio é **100% sintético**, gerado por `src/ai_analyst/data/generate.py` com seed fixa (`42`), tornando os dados reproduzíveis.
 
 | Entidade | Registros |
-|---|---|
+|---|---:|
 | Restaurantes | 200 |
 | Clientes | 5.000 |
 | Entregadores | 300 |
 | Pedidos | 60.000 |
 
-Cinco cidades, pedidos de 2025. Padrões foram injetados de propósito: picos de almoço e jantar, mais demanda de sexta a domingo e chuva aumentando o tempo de entrega e os cancelamentos. Dos 60.000 pedidos, 57.828 foram entregues e 2.172 cancelados (taxa de cancelamento de 3,62%).
+O dataset representa um marketplace de delivery com cinco cidades e pedidos de 2025. Foram inseridos padrões como picos de almoço e jantar, maior demanda de sexta a domingo e aumento do tempo de entrega e dos cancelamentos em dias de chuva.
 
-> Os insights refletem essas regras geradas, não o comportamento real de um marketplace, e não devem ser lidos como benchmarks de negócio.
+Dos 60.000 pedidos:
+
+- 57.828 foram entregues.
+- 2.172 foram cancelados.
+- Taxa de cancelamento: 3,62%.
+
+> Os insights refletem padrões gerados intencionalmente, não o comportamento real de um marketplace. Não devem ser interpretados como benchmarks de negócio do mundo real.
 
 ## Tecnologias
 
 | Camada | Tecnologias |
 |---|---|
 | Backend | Python 3.11+, FastAPI, Uvicorn, Pydantic |
-| Frontend | Next.js 16, React 19, TypeScript, Tailwind CSS |
+| Frontend | Next.js 16.4.6, React 19, TypeScript, Tailwind CSS |
 | Dados | DuckDB, SQLite, Pandas, NumPy |
 | IA | Gemini (`google-genai`), OpenAI, Anthropic |
+| Avaliação | Runner de benchmarks, relatórios e comparação histórica |
 | Segurança | SQLGlot |
 | Visualização | Recharts |
-| Testes | Pytest, compilador TypeScript (`tsc`) |
+| Qualidade do backend | Pytest, Ruff |
+| Qualidade do frontend | ESLint, compilador TypeScript, build Next.js |
 | Desenvolvimento | Git, GitHub Actions, Node.js, npm |
 
 ## Instalação
 
-Fluxo escrito para Windows PowerShell; requer Python 3.11+ e Node.js 20.9+.
+Instruções para Windows PowerShell. Requisitos: Python 3.11+ e Node.js 20.9+.
+
+### 1. Clonar o repositório
 
 ```powershell
-# 1. Clonar
 git clone https://github.com/nascimentomacedodani487-hue/ai-business-analyst.git
 cd ai-business-analyst
+```
 
-# 2-4. Ambiente virtual + dependências do backend
+### 2. Configurar o backend
+
+```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
+
 pip install -e ".[dev]"
 
-# 5. Configurar as chaves (defina ao menos uma chave de provedor no .env)
 Copy-Item .env.example .env
+```
 
-# 6. Gerar o banco DuckDB (data/delivery.duckdb)
+Configure no `.env` a chave do provedor que pretende utilizar:
+
+```text
+GEMINI_API_KEY=
+OPENAI_API_KEY=
+ANTHROPIC_API_KEY=
+```
+
+Somente o provedor selecionado precisa de uma chave válida para chamadas reais. Nunca faça commit do `.env` nem exponha chaves em screenshots, logs ou documentação.
+
+### 3. Gerar o banco analítico
+
+```powershell
 python -m ai_analyst.data.db
+```
 
-# 7. Iniciar a API em http://127.0.0.1:8000
+### 4. Iniciar o backend
+
+```powershell
 python -m uvicorn ai_analyst.api.main:app --reload
 ```
 
-Em um segundo terminal:
+A API estará disponível em `http://127.0.0.1:8000`.
+
+### 5. Configurar e iniciar o frontend
+
+Abra um segundo terminal:
 
 ```powershell
-# 8-9. Dependências do frontend e URL da API
 cd frontend
+
 npm install
+
 "NEXT_PUBLIC_API_URL=http://127.0.0.1:8000" | Out-File -Encoding ascii .env.local
 
-# 10. Iniciar o Next.js
 npm run dev
 ```
 
-**11.** Abra **http://localhost:3000** (use `localhost`, porque o CORS da API permite apenas `http://localhost:3000`).
-
-Chaves do `.env`: `GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`. Só o provedor selecionado precisa de chave. `LLM_PROVIDER` é opcional e assume `gemini` nos fluxos sem provedor explícito. Nunca faça commit do `.env`; ele está no `.gitignore`.
+Abra `http://localhost:3000` no navegador. Use `localhost` porque a configuração CORS da API permite `http://localhost:3000`.
 
 ## Testes e qualidade
 
+Os resultados abaixo foram verificados localmente em **17 de novembro de 2026**. São resultados de um momento específico, não uma garantia de que todo ambiente terá tempos de execução idênticos.
+
+### Backend
+
 ```powershell
-# Backend
-pytest -q
-
-# Frontend (gere os tipos de rota do Next.js primeiro, depois valide)
-cd frontend
-npx next typegen
-npx tsc --noEmit
-
+python -m pytest -q
+ruff check src tests
+ruff format --check src tests
 ```
 
-Última verificação em 06/11/2026 a partir de um clone limpo: **195 testes do backend passaram** e a checagem do TypeScript terminou sem erros. Os testes não chamam APIs pagas de LLM. São resultados de um momento específico; o [workflow de CI](#automação-de-workflows) refaz essas checagens a cada push.
+Resultados verificados:
 
-## Automação de workflows
+- **1.214 testes aprovados**.
+- Verificações do Ruff aprovadas.
+- 77 arquivos Python já formatados.
+
+### Frontend
+
+```powershell
+cd frontend
+
+npx eslint .
+npx tsc --noEmit
+npm run build
+```
+
+Resultados verificados:
+
+- ESLint concluído sem erros ou avisos.
+- TypeScript concluído sem erros.
+- Build de produção do Next.js 16.4.6 concluído com sucesso.
+- Rotas estáticas geradas: `/`, `/_not-found` e `/evaluation`.
+
+A suíte automatizada não exige chamadas pagas às APIs da OpenAI ou Anthropic.
+
+## Automação
 
 | Workflow | Gatilho | Finalidade |
 |---|---|---|
-| [`ci.yml`](.github/workflows/ci.yml) | Push na `main`, pull requests | Executa `pytest` e a checagem `tsc` do frontend; permissões somente leitura, sem segredos |
-| [`snake.yml`](.github/workflows/snake.yml) | Diário + manual | Gera a cobrinha de contribuições e publica na branch `output` |
+| [`ci.yml`](.github/workflows/ci.yml) | Push na `main` e pull requests | Executa os testes do backend e a checagem TypeScript do frontend |
+| [`snake.yml`](.github/workflows/snake.yml) | Diário e manual | Gera a cobrinha de contribuições do GitHub e publica na branch `output` |
 
-A cobrinha (exibida na seção em inglês) é decorativa e mostra o **gráfico de contribuições da conta do dono no GitHub, não a atividade deste repositório.** Ela só aparece depois que o `snake.yml` rodar uma vez: no repositório, vá em **Settings → Actions → General** e permita as actions, depois abra **Actions → Generate Snake → Run workflow**. A imagem é servida pela branch `output`.
+A cobrinha é decorativa. Ela representa o gráfico de contribuições da conta do proprietário no GitHub, não a atividade deste repositório. A imagem aparece depois que `snake.yml` é executado e o arquivo gerado é publicado na branch `output`.
 
 <details>
 <summary><b>Sobre o autor</b></summary>
 
+<div align="center">
+
+<a href="https://github.com/nascimentomacedodani487-hue/ai-business-analyst"><img height="150" src="https://github-readme-stats.vercel.app/api/pin/?username=nascimentomacedodani487-hue&repo=ai-business-analyst&theme=tokyonight&hide_border=true" alt="Card do repositório"/></a>
+<img height="150" src="https://github-readme-stats.vercel.app/api/top-langs/?username=nascimentomacedodani487-hue&layout=compact&theme=tokyonight&hide_border=true" alt="Principais linguagens da conta"/>
+
 <br/>
 
-Os cards de repositório e de linguagens aparecem na seção em inglês acima. O card de linguagens reflete a conta inteira, não apenas este projeto. Um widget de "tocando agora" do Spotify é opcional e exige uma integração ou serviço separado do Spotify; não está incluído.
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-Daniel%20Macedo-0b1020?style=for-the-badge&logo=linkedin&logoColor=00E5FF)](https://www.linkedin.com/in/daniel-macedo-54bb46210/)
+[![GitHub](https://img.shields.io/badge/GitHub-nascimentomacedodani487--hue-0b1020?style=for-the-badge&logo=github&logoColor=8B5CF6)](https://github.com/nascimentomacedodani487-hue)
 
-[LinkedIn: Daniel Macedo](https://www.linkedin.com/in/daniel-macedo-54bb46210/) · [GitHub: nascimentomacedodani487-hue](https://github.com/nascimentomacedodani487-hue)
+</div>
+
+O card de linguagens reflete toda a conta do GitHub, não apenas este projeto.
 
 </details>
 
 ## Próximos passos
 
-Apenas itens ainda não implementados:
+### Implementado
 
-- [ ] Avaliação sistemática de LLMs (conjunto de perguntas com SQL esperado, acerto por modelo)
-- [ ] Comparação lado a lado entre provedores
-- [ ] Testes automatizados mais amplos do frontend
-- [ ] Deploy hospedado
+- [x] Análise de negócio em linguagem natural com SQL gerado por LLM.
+- [x] Guardrails de SQL por AST e execução analítica somente leitura.
+- [x] Arquitetura multi-provedor com retry e observabilidade.
+- [x] Histórico persistente de análises e gerenciamento de projetos.
+- [x] AI Evaluation Engine com histórico de benchmarks e detalhes dos relatórios.
+- [x] Comparação histórica entre relatórios de benchmark compatíveis.
+
+### Melhorias futuras
+
+- [ ] Expandir os datasets de benchmark e a cobertura dos casos de avaliação.
+- [ ] Comparação de benchmarks entre provedores com critérios explícitos de compatibilidade.
+- [ ] Ampliar os testes automatizados do frontend.
+- [ ] Deploy hospedado.
+- [ ] Screenshots reais e GIF de demonstração da aplicação.
 
 <p align="right"><a href="#top">Voltar ao topo ↑</a></p>

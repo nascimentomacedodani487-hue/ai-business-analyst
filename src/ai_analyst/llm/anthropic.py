@@ -140,11 +140,13 @@ class AnthropicClient:
                 (perf_counter() - start_time) * 1000,
                 2,
             )
+            error_type = type(exc).__name__
 
             llm_metrics.record_failure(
                 provider=self.provider_name,
                 model=self.model,
                 duration_ms=duration_ms,
+                error_type=error_type,
             )
 
             logger.exception(
@@ -155,6 +157,7 @@ class AnthropicClient:
                     "model": self.model,
                     "duration_ms": duration_ms,
                     "prompt_length": prompt_length,
+                    "error_type": error_type,
                 },
             )
 

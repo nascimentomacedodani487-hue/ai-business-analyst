@@ -1,4 +1,3 @@
-
 type AgentStep = {
   name: string;
   status: "completed" | "failed" | "unsupported";
@@ -9,6 +8,8 @@ type AgentStep = {
 type AgentTimelineProps = {
   steps: AgentStep[];
 };
+
+const UNKNOWN_STAGE_LABEL = "Etapa de processamento";
 
 const stageLabels: Record<string, string> = {
   database_version: "Identificação da base de dados",
@@ -67,7 +68,8 @@ function getStageLabel(name: string): string {
     return `Execução SQL — tentativa ${executionMatch[1]}`;
   }
 
-  return name;
+  // Não expõe identificadores internos de etapas desconhecidas.
+  return UNKNOWN_STAGE_LABEL;
 }
 
 function getStageDescription(name: string): string | undefined {
@@ -91,7 +93,7 @@ function getStageDescription(name: string): string | undefined {
     return "Executa a versão atual da consulta SQL no DuckDB.";
   }
 
-  return undefined;
+  return "Etapa registrada durante o processamento da análise.";
 }
 
 function getStageIcon(name: string) {
